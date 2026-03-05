@@ -6,7 +6,7 @@ from tunetape.player import MPVController, check_dependencies, get_stream_info
 from tunetape.khinsider import fetch_album, is_khinsider_url, resolve_track_url
 from tunetape.playlist import Playlist
 from tunetape.ui import (
-    PlayerUI, show_error, show_header, show_loading, show_menu, show_welcome,
+    PlayerUI, show_error, show_loading, show_menu, show_welcome,
     prompt_url, prompt_khinsider_url, save_terminal_state, restore_terminal_state,
     console,
 )
@@ -65,7 +65,7 @@ def main():
                 show_error(str(e))
                 continue
 
-            show_header()
+            show_welcome()
             url = prompt_url()
 
             if not url.strip():
@@ -105,7 +105,7 @@ def main():
                 break
 
         elif choice == "2":
-            show_header()
+            show_welcome()
             url = prompt_khinsider_url()
 
             if not url.strip():
