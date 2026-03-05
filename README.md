@@ -153,6 +153,22 @@ Tracks auto-advance when they finish.
 
 ---
 
+## License
+
+This project is free to use, modify, and distribute. See [MIT License](LICENSE) for details.
+
+---
+
+## Disclaimer
+
+**tunetape** does not store, host, download, or redistribute any content from YouTube, KHInsider, or any other third-party service. It is a lightweight terminal-based streaming client that relies on publicly available tools ([mpv](https://mpv.io/), [yt-dlp](https://github.com/yt-dlp/yt-dlp)) to stream audio in real time.
+
+All trademarks, service marks, and brand names (including YouTube and KHInsider) are the property of their respective owners. This project is not affiliated with, endorsed by, or sponsored by any of these services.
+
+Users are solely responsible for how they use this tool. Please respect copyright laws and the terms of service of any platform you access through tunetape.
+
+---
+
 <p align="center">
   <sub>Made for terminal lovers who just want to listen.</sub>
 </p>
