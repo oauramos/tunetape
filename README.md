@@ -1,4 +1,8 @@
 <p align="center">
+  <img src="assets/logo.png" alt="tunetape logo" width="200">
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/platform-macOS-black?style=flat-square&logo=apple" alt="macOS">
   <img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/github/license/oauramos/tunetape?style=flat-square" alt="License">

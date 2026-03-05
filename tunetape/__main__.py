@@ -6,8 +6,9 @@ from tunetape.player import MPVController, check_dependencies, get_stream_info
 from tunetape.khinsider import fetch_album, is_khinsider_url, resolve_track_url
 from tunetape.playlist import Playlist
 from tunetape.ui import (
-    PlayerUI, show_error, show_header, show_loading, show_menu, prompt_url,
-    prompt_khinsider_url, save_terminal_state, restore_terminal_state, console,
+    PlayerUI, show_error, show_header, show_loading, show_menu, show_welcome,
+    prompt_url, prompt_khinsider_url, save_terminal_state, restore_terminal_state,
+    console,
 )
 
 _active_controller = None
@@ -52,7 +53,7 @@ def main():
     global _active_controller
 
     while True:
-        show_header()
+        show_welcome()
         choice = show_menu()
 
         if choice == "q":

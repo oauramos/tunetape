@@ -51,6 +51,21 @@ def show_header():
     console.print()
 
 
+def show_welcome():
+    """Clear screen and display welcome screen with fish-cassette art."""
+    console.clear()
+    console.print()
+    console.print("[cyan]                  ╭────────────────────╮[/cyan]")
+    console.print("[cyan]     \\\\           │  [/cyan][bold yellow]◎[/bold yellow][cyan] ═══════════ [/cyan][bold yellow]◎[/bold yellow][cyan]   │[/cyan]")
+    console.print("[cyan]      )) ═════════╡   └─┤  [/cyan][bold magenta]♪♫♪♫[/bold magenta][cyan]  ├─┘   ╞═════════ [/cyan][bold yellow]°[/bold yellow][cyan]>[/cyan]")
+    console.print("[cyan]     //           │  ════════════════  │           >[/cyan]")
+    console.print("[cyan]                  ╰────────────────────╯[/cyan]")
+    console.print()
+    console.print("                 [bold cyan]Welcome to TuneTape[/bold cyan]")
+    console.print("              [dim]Your terminal audio player[/dim]")
+    console.print()
+
+
 def show_menu() -> str:
     """Render main menu and return user choice."""
     console.print("  [bold]1.[/bold] Play YouTube URL")
@@ -139,6 +154,8 @@ class PlayerUI:
         self._result = "menu"
         self._stop = threading.Event()
         self._result_lock = threading.Lock()
+        self._display_ready = threading.Event()
+        self._display_error = None
 
     def _set_result(self, value: str):
         """Thread-safe first-writer-wins result setter."""
@@ -160,8 +177,19 @@ class PlayerUI:
         display_thread = threading.Thread(target=self._display_loop)
         display_thread.start()
 
+        # Wait for display thread to enter Live context before setting raw mode.
+        # This avoids a race where tty.setraw() runs before Live has initialised.
+        self._display_ready.wait(timeout=3)
+
         try:
             tty.setraw(fd)
+            # tty.setraw() disables OPOST, which stops \n → \r\n translation.
+            # Rich relies on the terminal to translate \n to \r\n; without it
+            # the player text staircases off-screen and looks blank.
+            # Re-enable OPOST so display output renders correctly.
+            raw_attrs = termios.tcgetattr(fd)
+            raw_attrs[1] = raw_attrs[1] | termios.OPOST
+            termios.tcsetattr(fd, termios.TCSANOW, raw_attrs)
             while not self._stop.is_set():
                 # [#8] Use select with timeout so we can check _stop flag
                 ready, _, _ = select.select([sys.stdin], [], [], 0.5)
@@ -210,11 +238,12 @@ class PlayerUI:
 
     def _display_loop(self):
         """Poll controller and render the player display."""
-        time.sleep(0.1)
-
         # [#7] Wrap in try/finally so _stop is always set if display thread crashes
         try:
+            # Force a clean console for the Live display
+            console.clear()
             with Live(console=console, refresh_per_second=2, screen=True) as live:
+                self._display_ready.set()
                 while not self._stop.is_set():
                     if not self.controller.is_alive():
                         if self.playlist_info and self.playlist_info.get("has_next"):
@@ -267,7 +296,8 @@ class PlayerUI:
 
                     live.update(display)
                     time.sleep(0.5)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._display_error = exc
         finally:
+            self._display_ready.set()
             self._stop.set()
