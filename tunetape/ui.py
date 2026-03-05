@@ -242,13 +242,13 @@ class PlayerUI:
 
                     if self.playlist_info:
                         controls = (
-                            f"  [dim][space] play/pause  [\u2190/\u2192] -/+10s  [,/.] -/+30s[/dim]\n"
-                            f"  [dim][n] next track  [p] prev track[/dim]\n"
-                            f"  [dim][b] back  [q] quit[/dim]\n"
+                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s[/dim]\n"
+                            f"  [dim]\\[n] next track  \\[p] prev track[/dim]\n"
+                            f"  [dim]\\[b] back  \\[q] quit[/dim]\n"
                         )
                     else:
                         controls = (
-                            f"  [dim][space] play/pause  [\u2190/\u2192] -/+10s  [,/.] -/+30s  [b] back  [q] quit[/dim]\n"
+                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s  \\[b] back  \\[q] quit[/dim]\n"
                         )
 
                     display = Text.from_markup(

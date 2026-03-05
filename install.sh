@@ -5,9 +5,42 @@ INSTALL_DIR="$HOME/.tunetape"
 BIN_DIR="$HOME/.local/bin"
 BIN_LINK="$BIN_DIR/tunetape"
 
+# ── Uninstall ────────────────────────────────────────────────
+if [[ "$1" == "uninstall" ]]; then
+    echo ""
+    echo "  tunetape uninstaller"
+    echo "  ====================="
+    echo ""
+    removed=false
+    if [[ -d "$INSTALL_DIR" ]]; then
+        rm -rf "$INSTALL_DIR"
+        echo "  [ok] Removed $INSTALL_DIR"
+        removed=true
+    fi
+    if [[ -f "$BIN_LINK" ]]; then
+        rm -f "$BIN_LINK"
+        echo "  [ok] Removed $BIN_LINK"
+        removed=true
+    fi
+    if $removed; then
+        echo ""
+        echo "  [done] tunetape has been uninstalled."
+    else
+        echo "  [!] tunetape is not installed."
+    fi
+    echo ""
+    exit 0
+fi
+
+# ── Install / Update ────────────────────────────────────────
 echo ""
-echo "  tunetape installer"
-echo "  ==================="
+if [[ -d "$INSTALL_DIR" ]]; then
+    echo "  tunetape updater"
+    echo "  ================="
+else
+    echo "  tunetape installer"
+    echo "  ==================="
+fi
 echo ""
 
 # Check macOS
@@ -71,8 +104,18 @@ if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
     echo "      source ~/.zshrc"
 fi
 
+if [[ -d "$INSTALL_DIR/.git" ]]; then
+    version=$(git -C "$INSTALL_DIR" describe --tags 2>/dev/null || git -C "$INSTALL_DIR" rev-parse --short HEAD)
+else
+    version="latest"
+fi
+
 echo ""
-echo "  [done] tunetape installed! Run it with:"
+echo "  [done] tunetape ($version) installed! Run it with:"
 echo ""
 echo "    tunetape"
+echo ""
+echo "  To uninstall later:"
+echo ""
+echo "    curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh | bash -s uninstall"
 echo ""
