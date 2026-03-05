@@ -6,10 +6,27 @@ build-backend = "setuptools.build_meta"
 name = "tunetape"
 version = "0.1.0"
 description = "Terminal YouTube audio player"
+readme = "README.md"
+license = "MIT"
 requires-python = ">=3.9"
-dependencies = [
-    "rich>=13.0",
+authors = [{ name = "oauramos" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX",
+    "Environment :: Console",
+    "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
+dependencies = [
+    "rich>=13.0,<15",
+]
+
+[project.urls]
+Homepage = "https://github.com/oauramos/tunetape"
+Repository = "https://github.com/oauramos/tunetape"
+
+[tool.setuptools.packages.find]
+include = ["tunetape*"]
 
 [project.scripts]
 tunetape = "tunetape.__main__:main"

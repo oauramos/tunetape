@@ -2,7 +2,8 @@
 set -e
 
 INSTALL_DIR="$HOME/.tunetape"
-BIN_LINK="/usr/local/bin/tunetape"
+BIN_DIR="$HOME/.local/bin"
+BIN_LINK="$BIN_DIR/tunetape"
 
 echo ""
 echo "  tunetape installer"
@@ -19,7 +20,12 @@ fi
 if ! command -v brew &>/dev/null; then
     echo "  [*] Installing Homebrew..."
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    eval "$(/opt/homebrew/bin/brew shellenv 2>/dev/null || /usr/local/bin/brew shellenv 2>/dev/null)"
+    # Source brew into current session
+    if [[ -x /opt/homebrew/bin/brew ]]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+    elif [[ -x /usr/local/bin/brew ]]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+    fi
 fi
 
 # Install dependencies via brew
@@ -35,7 +41,7 @@ done
 # Clone or update repo
 if [[ -d "$INSTALL_DIR" ]]; then
     echo "  [*] Updating tunetape..."
-    git -C "$INSTALL_DIR" pull --ff-only 2>/dev/null || true
+    git -C "$INSTALL_DIR" pull --ff-only || echo "  [!] Update failed, using existing version"
 else
     echo "  [*] Downloading tunetape..."
     git clone https://github.com/oauramos/tunetape.git "$INSTALL_DIR"
@@ -47,14 +53,23 @@ python3 -m venv "$INSTALL_DIR/.venv"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install "$INSTALL_DIR" -q
 
-# Create wrapper script
+# [#14] Install to ~/.local/bin instead of /usr/local/bin — no sudo needed
 echo "  [*] Creating tunetape command..."
-sudo mkdir -p "$(dirname "$BIN_LINK")"
-sudo tee "$BIN_LINK" > /dev/null << 'WRAPPER'
+mkdir -p "$BIN_DIR"
+cat > "$BIN_LINK" << 'WRAPPER'
 #!/bin/bash
 exec "$HOME/.tunetape/.venv/bin/tunetape" "$@"
 WRAPPER
-sudo chmod +x "$BIN_LINK"
+chmod +x "$BIN_LINK"
+
+# Check if ~/.local/bin is in PATH
+if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
+    echo ""
+    echo "  [!] Add ~/.local/bin to your PATH:"
+    echo ""
+    echo "      echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+    echo "      source ~/.zshrc"
+fi
 
 echo ""
 echo "  [done] tunetape installed! Run it with:"

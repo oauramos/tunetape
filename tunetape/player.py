@@ -4,6 +4,7 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 
@@ -16,8 +17,11 @@ def check_dependencies():
         raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
 
 
+# [#9] Broadened regex: supports youtube.com, youtu.be, music/m subdomains, /live/, /embed/, /shorts/
 _YOUTUBE_RE = re.compile(
-    r"^(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)[\w\-]+"
+    r"^(https?://)?(www\.|music\.|m\.)?"
+    r"(youtube\.com/(watch\?.*v=|shorts/|live/|embed/)|youtu\.be/)"
+    r"[\w\-]+"
 )
 
 
@@ -58,20 +62,23 @@ class MPVController:
     """Controls an mpv instance via IPC socket."""
 
     def __init__(self, stream_url: str):
-        self._sock_path = f"/tmp/tunetape_{os.getpid()}.sock"
-        self._lock = threading.Lock()
+        # [#5] Secure socket path: private temp directory instead of predictable /tmp path
+        self._sock_dir = tempfile.mkdtemp(prefix="tunetape_")
+        self._sock_path = os.path.join(self._sock_dir, "ipc.sock")
+        # [#2] Use RLock to prevent deadlock when signal handler calls quit() while lock is held
+        self._lock = threading.RLock()
         self._sock = None
+        self._closed = False  # [#16] Idempotent quit guard
+        self._buf = b""  # [#3] Persistent read buffer for IPC
 
-        # Remove stale socket
-        if os.path.exists(self._sock_path):
-            os.unlink(self._sock_path)
-
+        # [#11] Use -- separator so stream_url can't be interpreted as mpv flag
         self._proc = subprocess.Popen(
             [
                 "mpv",
                 "--no-video",
                 "--no-terminal",
                 f"--input-ipc-server={self._sock_path}",
+                "--",
                 stream_url,
             ],
             stdout=subprocess.DEVNULL,
@@ -82,31 +89,77 @@ class MPVController:
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline:
             if os.path.exists(self._sock_path):
+                sock = None
                 try:
-                    self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    self._sock.connect(self._sock_path)
-                    self._sock.settimeout(2.0)
+                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    sock.connect(self._sock_path)
+                    sock.settimeout(2.0)
+                    self._sock = sock
                     return
                 except (ConnectionRefusedError, FileNotFoundError):
-                    self._sock = None
+                    # [#1] Close socket on failed connect to prevent FD leak
+                    if sock is not None:
+                        sock.close()
             time.sleep(0.1)
 
-        # Cleanup on failure
+        # [#10] Reap zombie on init failure
         self._proc.terminate()
+        try:
+            self._proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self._proc.kill()
+            self._proc.wait()
+        self._cleanup_socket()
         raise RuntimeError("Could not connect to the player. Try again.")
+
+    def _cleanup_socket(self):
+        try:
+            if os.path.exists(self._sock_path):
+                os.unlink(self._sock_path)
+        except OSError:
+            pass
+        try:
+            if os.path.exists(self._sock_dir):
+                os.rmdir(self._sock_dir)
+        except OSError:
+            pass
 
     def _send(self, command: list) -> dict:
         with self._lock:
+            if self._closed:
+                return {"error": "closed"}
             try:
-                msg = json.dumps({"command": command}) + "\n"
+                # [#3] Use request_id to match responses, skip unsolicited events
+                request_id = int(time.monotonic() * 1000) % 1_000_000
+                msg = json.dumps({"command": command, "request_id": request_id}) + "\n"
                 self._sock.sendall(msg.encode())
-                data = b""
-                while b"\n" not in data:
+
+                # [#4] Overall deadline for response (5s)
+                send_deadline = time.monotonic() + 5.0
+                while time.monotonic() < send_deadline:
+                    # Process lines from buffer
+                    while b"\n" in self._buf:
+                        line, self._buf = self._buf.split(b"\n", 1)
+                        try:
+                            parsed = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        # Skip unsolicited event messages
+                        if "event" in parsed and "request_id" not in parsed:
+                            continue
+                        return parsed
+
+                    # [#17] Cap buffer size
+                    if len(self._buf) > 65536:
+                        self._buf = b""
+                        return {"error": "response too large"}
+
                     chunk = self._sock.recv(4096)
                     if not chunk:
                         return {"error": "connection closed"}
-                    data += chunk
-                return json.loads(data.split(b"\n")[0])
+                    self._buf += chunk
+
+                return {"error": "timeout"}
             except Exception:
                 return {"error": "send failed"}
 
@@ -138,8 +191,16 @@ class MPVController:
         return self._proc.poll() is None
 
     def quit(self):
+        # [#16] Idempotent quit — safe to call multiple times / from signal handler
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+
         try:
-            self._send(["quit"])
+            if self._sock:
+                msg = json.dumps({"command": ["quit"]}) + "\n"
+                self._sock.sendall(msg.encode())
         except Exception:
             pass
         try:
@@ -148,6 +209,7 @@ class MPVController:
         except Exception:
             try:
                 self._proc.kill()
+                self._proc.wait()
             except Exception:
                 pass
         try:
@@ -155,8 +217,4 @@ class MPVController:
                 self._sock.close()
         except Exception:
             pass
-        try:
-            if os.path.exists(self._sock_path):
-                os.unlink(self._sock_path)
-        except Exception:
-            pass
+        self._cleanup_socket()

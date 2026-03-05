@@ -3,12 +3,17 @@ import signal
 import sys
 
 from tunetape.player import MPVController, check_dependencies, get_stream_info
-from tunetape.ui import PlayerUI, show_error, show_header, show_loading, show_menu, prompt_url
+from tunetape.ui import (
+    PlayerUI, show_error, show_header, show_loading, show_menu, prompt_url,
+    save_terminal_state, restore_terminal_state,
+)
 
 _active_controller = None
+_should_quit = False
 
 
 def _cleanup():
+    """Clean up controller and restore terminal. Safe to call multiple times."""
     global _active_controller
     if _active_controller is not None:
         try:
@@ -16,14 +21,22 @@ def _cleanup():
         except Exception:
             pass
         _active_controller = None
+    restore_terminal_state()
 
 
 def _signal_handler(sig, frame):
-    _cleanup()
+    """Handle SIGINT/SIGTERM by setting quit flag. Avoids deadlock by not calling quit() directly."""
+    global _should_quit
+    _should_quit = True
+    # [#2] Don't call _cleanup() here — it would acquire the RLock which may deadlock.
+    # Instead, restore terminal state (no locks involved) and exit.
+    # atexit handler will call _cleanup() which handles controller.quit().
+    restore_terminal_state()
     sys.exit(0)
 
 
 def main():
+    save_terminal_state()
     atexit.register(_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
     signal.signal(signal.SIGTERM, _signal_handler)
