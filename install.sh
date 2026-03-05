@@ -82,7 +82,8 @@ fi
 
 # Create venv and install
 echo "  [*] Setting up Python environment..."
-python3 -m venv "$INSTALL_DIR/.venv"
+python3 -m venv --without-pip "$INSTALL_DIR/.venv"
+curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$INSTALL_DIR/.venv/bin/python3" - -q
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install "$INSTALL_DIR" -q
 
