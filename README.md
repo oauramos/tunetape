@@ -8,14 +8,14 @@
 <h1 align="center">tunetape</h1>
 
 <p align="center">
-  <b>Stream YouTube audio straight from your terminal.</b><br>
-  <sub>No browser. No tabs. No distractions. Just music.</sub>
+  <b>Stream audio straight from your terminal.</b><br>
+  <sub>YouTube. Video game soundtracks. No browser. No distractions. Just music.</sub>
 </p>
 
 <br>
 
 <p align="center">
-  <img src="assets/player.svg" alt="tunetape player" width="600">
+  <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
 </p>
 
 ---
@@ -23,10 +23,14 @@
 ## How it works
 
 ```
-tunetape → paste a YouTube URL → audio plays in your terminal
+tunetape → pick a source → paste a URL → music plays in your terminal
 ```
 
-tunetape grabs the audio stream with **yt-dlp**, plays it through **mpv** (no video), and gives you a clean TUI with playback controls — all without leaving the terminal.
+tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard controls — all without leaving the terminal.
+
+**Two sources:**
+- **YouTube** — paste any YouTube URL. Audio extracted via **yt-dlp**.
+- **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
 ---
 
@@ -59,6 +63,8 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
+> **Note:** `yt-dlp` is only required for YouTube. KHInsider works with just `mpv`.
+
 </details>
 
 <details>
@@ -82,10 +88,16 @@ rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
   <img src="assets/menu.svg" alt="tunetape menu" width="600">
 </p>
 
-### Player
+### YouTube Player
 
 <p align="center">
-  <img src="assets/player.svg" alt="tunetape player" width="600">
+  <img src="assets/player.svg" alt="tunetape youtube player" width="600">
+</p>
+
+### KHInsider Playlist
+
+<p align="center">
+  <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
 </p>
 
 ### Error Handling
@@ -98,6 +110,8 @@ rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
 
 ## Controls
 
+### General
+
 | Key | Action |
 |:---:|--------|
 | `space` | Play / Pause |
@@ -108,12 +122,21 @@ rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
 | `b` | Back to menu |
 | `q` | Quit |
 
+### Playlist Mode (KHInsider)
+
+| Key | Action |
+|:---:|--------|
+| `n` | Next track |
+| `p` | Previous track |
+
+Tracks auto-advance when they finish.
+
 ---
 
 ## Built with
 
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube audio extraction
 - [mpv](https://mpv.io/) — lightweight media player
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube audio extraction
 - [rich](https://github.com/Textualize/rich) — terminal UI rendering
 
 ---
