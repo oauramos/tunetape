@@ -95,13 +95,26 @@ exec "$HOME/.tunetape/.venv/bin/tunetape" "$@"
 WRAPPER
 chmod +x "$BIN_LINK"
 
-# Check if ~/.local/bin is in PATH
+# Add ~/.local/bin to PATH if not already there
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    echo ""
-    echo "  [!] Add ~/.local/bin to your PATH:"
-    echo ""
-    echo "      echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
-    echo "      source ~/.zshrc"
+    SHELL_NAME="$(basename "$SHELL")"
+    case "$SHELL_NAME" in
+        zsh)  RC_FILE="$HOME/.zshrc" ;;
+        bash) RC_FILE="$HOME/.bash_profile" ;;
+        *)    RC_FILE="$HOME/.profile" ;;
+    esac
+
+    EXPORT_LINE='export PATH="$HOME/.local/bin:$PATH"'
+
+    if ! grep -qF '.local/bin' "$RC_FILE" 2>/dev/null; then
+        echo "" >> "$RC_FILE"
+        echo "# Added by tunetape installer" >> "$RC_FILE"
+        echo "$EXPORT_LINE" >> "$RC_FILE"
+        echo "  [ok] Added ~/.local/bin to PATH in $RC_FILE"
+    fi
+
+    # Make it available in the current session too
+    export PATH="$BIN_DIR:$PATH"
 fi
 
 if [[ -d "$INSTALL_DIR/.git" ]]; then
