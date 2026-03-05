@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tunetape"
+version = "0.1.0"
+description = "Terminal YouTube audio player"
+requires-python = ">=3.9"
+dependencies = [
+    "rich>=13.0",
+]
+
+[project.scripts]
+tunetape = "tunetape.__main__:main"
