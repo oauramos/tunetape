@@ -9,11 +9,11 @@ import threading
 import time
 
 
-def check_dependencies():
-    """Verify mpv and yt-dlp exist in PATH."""
+def check_dependencies(require_ytdlp: bool = True):
+    """Verify mpv (always) and yt-dlp (when required) exist in PATH."""
     if not shutil.which("mpv"):
         raise RuntimeError("mpv is not installed. Install it with: brew install mpv")
-    if not shutil.which("yt-dlp"):
+    if require_ytdlp and not shutil.which("yt-dlp"):
         raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
 
 

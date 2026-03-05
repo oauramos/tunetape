@@ -3,9 +3,11 @@ import signal
 import sys
 
 from tunetape.player import MPVController, check_dependencies, get_stream_info
+from tunetape.khinsider import fetch_album, is_khinsider_url, resolve_track_url
+from tunetape.playlist import Playlist
 from tunetape.ui import (
     PlayerUI, show_error, show_header, show_loading, show_menu, prompt_url,
-    save_terminal_state, restore_terminal_state,
+    prompt_khinsider_url, save_terminal_state, restore_terminal_state, console,
 )
 
 _active_controller = None
@@ -42,7 +44,7 @@ def main():
     signal.signal(signal.SIGTERM, _signal_handler)
 
     try:
-        check_dependencies()
+        check_dependencies(require_ytdlp=False)
     except RuntimeError as e:
         show_error(str(e))
         return
@@ -56,6 +58,12 @@ def main():
         if choice == "q":
             break
         elif choice == "1":
+            try:
+                check_dependencies(require_ytdlp=True)
+            except RuntimeError as e:
+                show_error(str(e))
+                continue
+
             show_header()
             url = prompt_url()
 
@@ -76,21 +84,84 @@ def main():
                 show_error(str(e))
                 continue
 
+            controller = None
             try:
                 controller = MPVController(info["stream_url"])
                 _active_controller = controller
-            except Exception as e:
-                show_error(f"Could not start player: {e}")
-                continue
-
-            try:
                 ui = PlayerUI(info["title"], controller)
                 result = ui.run()
+            except Exception as e:
+                if controller is None:
+                    show_error(f"Could not start player: {e}")
+                    continue
+                raise
             finally:
-                controller.quit()
+                if controller is not None:
+                    controller.quit()
                 _active_controller = None
 
             if result == "quit":
+                break
+
+        elif choice == "2":
+            show_header()
+            url = prompt_khinsider_url()
+
+            if not url.strip():
+                show_error("No URL entered.")
+                continue
+
+            try:
+                console.print("  [dim]Fetching album...[/dim]")
+                album = fetch_album(url)
+            except (ValueError, RuntimeError, OSError) as e:
+                show_error(str(e))
+                continue
+
+            playlist = Playlist(album)
+            quit_app = False
+
+            while True:
+                track = playlist.current_track
+                try:
+                    console.print(f"  [dim]Loading track {playlist.track_label}...[/dim]")
+                    direct_url = resolve_track_url(track)
+                except (RuntimeError, OSError) as e:
+                    show_error(f"Could not load track: {e}")
+                    break
+
+                controller = None
+                try:
+                    controller = MPVController(direct_url)
+                    _active_controller = controller
+                    playlist_info = {
+                        "track_label": playlist.track_label,
+                        "has_next": playlist.has_next(),
+                        "has_prev": playlist.has_prev(),
+                    }
+                    ui = PlayerUI(track.name, controller, playlist_info)
+                    result = ui.run()
+                except Exception as e:
+                    if controller is None:
+                        show_error(f"Could not start player: {e}")
+                        break
+                    raise
+                finally:
+                    if controller is not None:
+                        controller.quit()
+                    _active_controller = None
+
+                if result == "next_track" and playlist.has_next():
+                    playlist.next()
+                elif result == "prev_track" and playlist.has_prev():
+                    playlist.prev()
+                elif result == "quit":
+                    quit_app = True
+                    break
+                else:
+                    break
+
+            if quit_app:
                 break
 
 

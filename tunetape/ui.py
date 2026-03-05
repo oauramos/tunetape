@@ -47,13 +47,14 @@ def show_header():
     """Clear screen and print styled header."""
     console.clear()
     console.print()
-    console.print("[bold cyan]  tunetape[/bold cyan] [dim]- Terminal YouTube Player[/dim]")
+    console.print("[bold cyan]  tunetape[/bold cyan] [dim]- Terminal Audio Player[/dim]")
     console.print()
 
 
 def show_menu() -> str:
     """Render main menu and return user choice."""
-    console.print("  [bold]1.[/bold] Play URL")
+    console.print("  [bold]1.[/bold] Play YouTube URL")
+    console.print("  [bold]2.[/bold] Play KHInsider Album")
     console.print("  [bold]q.[/bold] Quit")
     console.print()
     try:
@@ -74,6 +75,18 @@ def prompt_url() -> str:
     return url.strip()
 
 
+def prompt_khinsider_url() -> str:
+    """Prompt user for a KHInsider album URL."""
+    console.print("  Paste KHInsider album URL:")
+    console.print("  [dim]e.g. https://downloads.khinsider.com/game-soundtracks/album/wii-console-background-music[/dim]")
+    console.print()
+    try:
+        url = input("  > ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return url.strip()
+
+
 def show_loading(url: str):
     """Display status message while fetching stream info."""
     console.print("  [dim]Fetching stream...[/dim]")
@@ -83,7 +96,7 @@ def show_error(message: str):
     """Render error panel and wait for keypress."""
     console.print()
     console.print(Panel(
-        f"[red]{message}[/red]",
+        f"[red]{escape(message)}[/red]",
         title="[bold red]Error[/bold red]",
         border_style="red",
         padding=(1, 2),
@@ -118,15 +131,24 @@ def _build_progress_bar(position: float, duration: float, width: int = 40) -> st
 class PlayerUI:
     """TUI player with keyboard controls and live display."""
 
-    def __init__(self, title: str, controller):
+    def __init__(self, title: str, controller, playlist_info: dict = None):
         # [#12] Escape Rich markup in title to prevent injection
         self.title = escape(title)
         self.controller = controller
+        self.playlist_info = playlist_info
         self._result = "menu"
         self._stop = threading.Event()
+        self._result_lock = threading.Lock()
+
+    def _set_result(self, value: str):
+        """Thread-safe first-writer-wins result setter."""
+        with self._result_lock:
+            if not self._stop.is_set():
+                self._result = value
+                self._stop.set()
 
     def run(self) -> str:
-        """Run the player UI. Returns 'menu' or 'quit'."""
+        """Run the player UI. Returns 'menu', 'quit', 'next_track', or 'prev_track'."""
         # [#13] Check for TTY before entering raw mode
         if not sys.stdin.isatty():
             raise RuntimeError("tunetape requires an interactive terminal.")
@@ -153,11 +175,13 @@ class PlayerUI:
                 if ch == " ":
                     self.controller.toggle_pause()
                 elif ch == "q":
-                    self._result = "quit"
-                    self._stop.set()
+                    self._set_result("quit")
                 elif ch == "b":
-                    self._result = "menu"
-                    self._stop.set()
+                    self._set_result("menu")
+                elif ch == "n" and self.playlist_info and self.playlist_info.get("has_next"):
+                    self._set_result("next_track")
+                elif ch == "p" and self.playlist_info and self.playlist_info.get("has_prev"):
+                    self._set_result("prev_track")
                 elif ch == ".":
                     self.controller.seek(30)
                 elif ch == ",":
@@ -176,8 +200,7 @@ class PlayerUI:
                                 elif seq2 == "D":  # Left
                                     self.controller.seek(-10)
                 elif ch == "\x03":  # Ctrl+C
-                    self._result = "quit"
-                    self._stop.set()
+                    self._set_result("quit")
         finally:
             termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
@@ -194,8 +217,10 @@ class PlayerUI:
             with Live(console=console, refresh_per_second=2, screen=True) as live:
                 while not self._stop.is_set():
                     if not self.controller.is_alive():
-                        self._result = "menu"
-                        self._stop.set()
+                        if self.playlist_info and self.playlist_info.get("has_next"):
+                            self._set_result("next_track")
+                        else:
+                            self._set_result("menu")
                         break
 
                     try:
@@ -203,8 +228,7 @@ class PlayerUI:
                         duration = self.controller.get_duration()
                         paused = self.controller.is_paused()
                     except Exception:
-                        self._result = "menu"
-                        self._stop.set()
+                        self._set_result("menu")
                         break
 
                     pos_str = _format_time(position)
@@ -212,17 +236,33 @@ class PlayerUI:
                     bar = _build_progress_bar(position, duration)
                     status = "[yellow]Paused[/yellow]" if paused else "[green]Playing[/green]"
 
+                    track_line = ""
+                    if self.playlist_info:
+                        track_line = f"  [dim]Track {self.playlist_info['track_label']}[/dim]\n"
+
+                    if self.playlist_info:
+                        controls = (
+                            f"  [dim][space] play/pause  [\u2190/\u2192] -/+10s  [,/.] -/+30s[/dim]\n"
+                            f"  [dim][n] next track  [p] prev track[/dim]\n"
+                            f"  [dim][b] back  [q] quit[/dim]\n"
+                        )
+                    else:
+                        controls = (
+                            f"  [dim][space] play/pause  [\u2190/\u2192] -/+10s  [,/.] -/+30s  [b] back  [q] quit[/dim]\n"
+                        )
+
                     display = Text.from_markup(
                         f"\n"
-                        f"  [bold cyan]tunetape[/bold cyan] [dim]- Terminal YouTube Player[/dim]\n"
+                        f"  [bold cyan]tunetape[/bold cyan] [dim]- Terminal Audio Player[/dim]\n"
                         f"\n"
                         f"  [bold]Now Playing:[/bold] {self.title}\n"
+                        f"{track_line}"
                         f"\n"
                         f"  {pos_str} {bar} {dur_str}\n"
                         f"\n"
                         f"  > {status}\n"
                         f"\n"
-                        f"  [dim][space] play/pause  [\u2190/\u2192] -/+10s  [,/.] -/+30s  [b] back  [q] quit[/dim]\n"
+                        f"{controls}"
                     )
 
                     live.update(display)
