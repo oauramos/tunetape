@@ -13,6 +13,8 @@ _DEFAULTS = {
     # The user asked for even volume across sources, so normalization is on
     # by default; toggle it from the Settings menu.
     "normalize_volume": True,
+    # Accent color for the whole interface; change it in Settings → Accent color.
+    "accent_color": "cyan",
 }
 
 

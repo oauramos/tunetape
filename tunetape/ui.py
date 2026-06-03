@@ -1,5 +1,6 @@
 import os
 import select
+import shutil
 import sys
 import termios
 import threading
@@ -7,11 +8,32 @@ import time
 import tty
 from datetime import datetime, timezone
 
-from rich.console import Console
+from rich import box
+from rich.columns import Columns
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markup import escape
+from rich.padding import Padding
 from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
+
+from tunetape import __version__, art, config, debug, paths
+from tunetape.art import ACCENT, ACCENT2
+
+
+def set_accent(color: str) -> None:
+    """Recolor the UI accent live across the ui + art modules.
+
+    ACCENT is read by name at render time throughout this module (and by
+    art.render_welcome), so reassigning the module globals here recolors the
+    whole interface on the next redraw — no per-call plumbing needed.
+    """
+    if color not in art.ACCENT_COLORS:
+        return
+    global ACCENT
+    ACCENT = color
+    art.ACCENT = color
 
 console = Console()
 
@@ -48,63 +70,139 @@ def show_header():
     """Clear screen and print styled header."""
     console.clear()
     console.print()
-    console.print("[bold cyan]  tunetape[/bold cyan] [dim]- Terminal Audio Player[/dim]")
+    console.print(f"[bold {ACCENT}]  tunetape[/bold {ACCENT}] [dim]- Terminal Audio Player[/dim]")
     console.print()
 
 
-def show_welcome():
-    """Clear screen and display welcome screen with cassette art."""
+def show_welcome(frame: int = 0):
+    """Clear screen and display the cassette with the title baked in."""
     console.clear()
-    art = (
-        '                                 ,\n'
-        '                               _▄▓▌\n'
-        '                             ╓▓╬▄╠█▄\n'
-        '                            ▄▌║▓Ñ▒╬╬▓▄_           ,▄▄▄\n'
-        '                           ▓Ñ║█╬▓█╣▓▌╬▓▓▌▄     ▄▓▓Ñ▓▀"\n'
-        '                   __▄▄▄▓▀▀▀▀╬╬╬╬╬╬╬╬▀▀▀▀▓██▄▄███▓▓█▓▓▄▓▓▄▓▓▓▓▓▄\n'
-        '              _╓▄æ▀▀╠▄φ╠╠╠╫ÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑÑ╫▒╠╫▌          _▄▄▓æ⌐\n'
-        '           ,▄▓▀╠╦╠╠╠╠╠╠╠Ä█,                                  ╫╠╫▌      ,▄▓▓╫██└\n'
-        '         ,▓▓╠╠╢▓╝▓Å▌╠╩╩╩╠╠▓▌                                 ╞╠╫▌    ╓▓▓╬╣╫█`\n'
-        '       ╔▓╬ª╙"└╢▓██Ñ▓╜  ▄  \'▓▌                                ╞╠╫▌   ▓▓▓▓╬▓▌\n'
-        '        ╙▀▓▄╥ `╨Å▀▀^   ╙▌  ▐▌   æ▓▓▀█╬╬╣████▀▀▓█▓╬╬▓▀▓▓W     ╞╠╫█▄▓███▓╬█▀\n'
-        '       ╫█▀▀▀▀▓▄"▓      ▐▌  ╢▌  ▓Ñ▓─ ┌▓▌╠████M ██▒╫█┐ ─╫▓█    ╞╣▓▌╠╬╬█▓╬█▌\n'
-        '        └╙▓▓µ╔_╙"    ,▄▀ _▄█   ╙▓▓█▄█▓╠▓████▄,██▌╠▓▓▄█▓▓Ñ    ╞╬▓█╬▓▓█╬╬█µ\n'
-        '            ╙▀▀▓▄▄B▀▀Ü╔░▄█╙      └╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙╙"      ╞╬▓▌▀▀██▓▓╬█_\n'
-        '                `"╙▀▀▀█▓▓                                    ╞╬▓▌  ╙██▓╬╬█\n'
-        '                     ⁿ█╬▓▄___________________________________▓╬▓█   \'▓▓▓╬╬█_\n'
-        '                     j█╬╬╬╬╬╬╣▓Φ@@@@@@@@@@@@@@@@@@@@@@@▒█╬╬╬╬╬╬▓█     └▀▓▓╬█▄\n'
-        '                     ²█╬╬╬╬╬╬█▒╬╬▓▓╬╫██╬╬╬╬╬╬╬╬╬██╬╬▓▓╬▓Ñ█╬╬╬╬╬▓█        └▀▓█▓,\n'
-        '                      █▓▓▓▓▓█▓▓▓▓██▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓█▓▓▓█▓▓▓▓▓█▀            ```\n'
-        '                              ⁿ█▓██╬▓█▄           └▀███▓█─\n'
-        '                                ╙▓▓Ñ▒╫▌              ▀█▓╬█▄\n'
-        '                                  ╙▓▌▓▌                └╙▀██▄\n'
-        '                                     ╙▀\n'
+    console.print(art.render_welcome())
+    console.print()
+
+
+# --- btop-style boxed key-cap buttons --------------------------------------
+
+def key_cap(key: str, label: str) -> Panel:
+    """A small boxed key-cap: the key in the top border, label inside."""
+    return Panel(
+        label, title=str(key), box=box.SQUARE, border_style=ACCENT,
+        padding=(0, 1), expand=False,
     )
-    console.print(Text(art, style="cyan"))
-    console.print("                 [bold cyan]Welcome to TuneTape[/bold cyan]")
-    console.print("              [dim]Your terminal audio player[/dim]")
-    console.print("                [dim]made by @oauramos[/dim]")
+
+
+def button_row(items) -> Columns:
+    """Lay a list of (key, label) caps side by side, wrapping as needed."""
+    return Columns([key_cap(k, l) for k, l in items], padding=(0, 1), expand=False)
+
+
+# Two rows of menu buttons: actions on top, utility keys below. Labels are
+# kept short so all four fit on one line; full descriptions are on the Help
+# screen (_commands_table).
+_MENU_ROW1 = [
+    ("1", "YouTube"),
+    ("2", "KHInsider"),
+    ("3", "History"),
+    ("4", "Settings"),
+]
+_MENU_ROW2 = [
+    ("h", "Help"),
+    ("d", "Debug"),
+    ("q", "Quit"),
+]
+_MENU_ITEMS = _MENU_ROW1 + _MENU_ROW2
+_MENU_KEYS = {k for k, _ in _MENU_ITEMS}
+
+
+def _menu_button(key: str, label: str) -> Panel:
+    return Panel(
+        f"[bold {ACCENT}]{key}[/]  {label}", box=box.ROUNDED,
+        border_style=ACCENT, padding=(0, 1), expand=False,
+    )
+
+
+def _button_row(items) -> Table:
+    """One horizontal row of boxed buttons (single line, no wrapping)."""
+    grid = Table.grid(padding=(0, 1))
+    for _ in items:
+        grid.add_column()
+    grid.add_row(*[_menu_button(k, l) for k, l in items])
+    return grid
+
+
+def _menu_buttons_grid() -> Padding:
+    """Boxed menu buttons in two rows: [1 2 3 4] then [h d q]."""
+    rows = Group(_button_row(_MENU_ROW1), _button_row(_MENU_ROW2))
+    return Padding(rows, (0, 0, 0, 8))
+
+
+def _draw_menu():
+    """Render the welcome cassette + boxed menu buttons (scrolling, no clipping)."""
+    console.clear()
+    console.print(art.render_welcome())
+    console.print()
+    console.print(_menu_buttons_grid())
     console.print()
 
 
-def show_menu() -> str:
-    """Render main menu and return user choice."""
-    console.print("  [bold]1.[/bold] Play YouTube URL")
-    console.print("  [bold]2.[/bold] Play KHInsider Album")
-    console.print("  [bold]3.[/bold] Recently played")
-    console.print("  [bold]4.[/bold] Settings")
-    console.print("  [bold]q.[/bold] Quit")
-    console.print()
+def _menu_fallback() -> str:
+    """Non-interactive fallback (no TTY): print once and read a line."""
+    _draw_menu()
     try:
-        choice = input("  > ").strip().lower()
+        raw = input("  > ").strip().lower()
     except (EOFError, KeyboardInterrupt):
-        choice = "q"
-    return choice
+        return "q"
+    return raw[:1] if raw and raw[0] in _MENU_KEYS else "q"
+
+
+def _menu_renderable(frame: int):
+    """The animated menu screen: shimmering tuna + two rows of boxed buttons."""
+    return Group(
+        art.render_welcome(frame),
+        Text(""),
+        _menu_buttons_grid(),
+        Text.from_markup("  [dim]› press a key[/dim]"),
+    )
+
+
+def main_menu_loop() -> str:
+    """Animated single-key main menu (the tuna shimmers). Returns 1/2/3/4/h/d/q."""
+    if not sys.stdin.isatty():
+        return _menu_fallback()
+
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    frame = 0
+    try:
+        tty.setraw(fd)
+        # Re-enable OPOST so Rich's \n still maps to \r\n (see PlayerUI.run).
+        raw_attrs = termios.tcgetattr(fd)
+        raw_attrs[1] = raw_attrs[1] | termios.OPOST
+        termios.tcsetattr(fd, termios.TCSANOW, raw_attrs)
+        console.clear()
+        with Live(console=console, refresh_per_second=15, screen=True) as live:
+            while True:
+                live.update(_menu_renderable(frame))
+                ready, _, _ = select.select([sys.stdin], [], [], 0.07)
+                if ready:
+                    ch = os.read(fd, 1).decode("utf-8", errors="ignore").lower()
+                    if ch == "\x1b":
+                        # Drain escape sequences (arrows) so they don't match keys.
+                        while select.select([sys.stdin], [], [], 0.01)[0]:
+                            os.read(fd, 1)
+                    elif ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+                        return "q"
+                    elif ch in _MENU_KEYS:
+                        return ch
+                frame += 1
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def prompt_url() -> str:
     """Prompt user for a YouTube URL."""
     console.print("  Paste YouTube URL:")
+    console.print("  [dim]enter to play  ·  b back  ·  q quit[/dim]")
     console.print()
     try:
         url = input("  > ")
@@ -117,6 +215,7 @@ def prompt_khinsider_url() -> str:
     """Prompt user for a KHInsider album URL."""
     console.print("  Paste KHInsider album URL:")
     console.print("  [dim]e.g. https://downloads.khinsider.com/game-soundtracks/album/wii-console-background-music[/dim]")
+    console.print("  [dim]enter to play  ·  b back  ·  q quit[/dim]")
     console.print()
     try:
         url = input("  > ")
@@ -125,17 +224,21 @@ def prompt_khinsider_url() -> str:
     return url.strip()
 
 
-def show_loading(url: str = ""):
-    """Display status message while fetching stream info."""
-    if url:
-        shown = url if len(url) <= 60 else url[:57] + "..."
-        console.print(f"  [dim]Fetching stream... {escape(shown)}[/dim]")
-    else:
-        console.print("  [dim]Fetching stream...[/dim]")
+def with_spinner(message: str, func, *args, **kwargs):
+    """Run a blocking ``func`` while showing an animated spinner.
+
+    Rich's ``console.status`` refreshes the spinner on its own thread, so it
+    keeps animating while ``func`` blocks (e.g. a yt-dlp subprocess call) on the
+    main thread. Returns whatever ``func`` returns; exceptions propagate.
+    """
+    debug.log(message)
+    with console.status(f"[{ACCENT}]{message}[/{ACCENT}]", spinner="dots"):
+        return func(*args, **kwargs)
 
 
 def show_error(message: str):
     """Render error panel and wait for keypress."""
+    debug.log(message, "ERROR")
     console.print()
     console.print(Panel(
         f"[red]{escape(message)}[/red]",
@@ -188,7 +291,7 @@ def show_history(entries: list) -> tuple:
       'back'   -> payload is None
     """
     console.print()
-    console.print("  [bold cyan]Recently played[/bold cyan]")
+    console.print(f"  [bold {ACCENT}]Recently played[/bold {ACCENT}]")
     console.print()
     for i, e in enumerate(entries, 1):
         tag = "YT" if e.get("type") == "youtube" else "KH"
@@ -206,7 +309,7 @@ def show_history(entries: list) -> tuple:
         )
     console.print()
     console.print(
-        "  [dim]number to play  ·  d <n> delete  ·  c clear all  ·  q back[/dim]"
+        "  [dim]number to play  ·  d <n> delete  ·  c clear all  ·  b back  ·  q quit[/dim]"
     )
     console.print()
     while True:
@@ -214,7 +317,9 @@ def show_history(entries: list) -> tuple:
             raw = input("  > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             return ("back", None)
-        if raw in ("q", ""):
+        if raw == "q":
+            return ("quit", None)
+        if raw in ("b", ""):
             return ("back", None)
         if raw == "c":
             return ("clear", None)
@@ -232,23 +337,148 @@ def show_history(entries: list) -> tuple:
 
 
 def show_settings(normalize_on: bool) -> str:
-    """Render the settings screen and return a validated choice ('1' or 'q')."""
+    """Render the settings screen and return a choice ('1'/'2'/'b'/'q')."""
     console.print()
-    console.print("  [bold cyan]Settings[/bold cyan]")
+    console.print(f"  [bold {ACCENT}]Settings[/bold {ACCENT}]")
     console.print()
     state = "[green]on[/green]" if normalize_on else "[dim]off[/dim]"
     console.print(f"  [bold]1.[/bold] Volume normalization: {state}")
     console.print("     [dim]Evens out loudness across tracks and sources.[/dim]")
-    console.print("  [bold]q.[/bold] Back")
+    console.print(f"  [bold]2.[/bold] Accent color: [{ACCENT}]{ACCENT}[/{ACCENT}]")
+    console.print("     [dim]Recolor the whole interface — pick your vibe.[/dim]")
+    console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
     console.print()
     while True:
         try:
             choice = input("  > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            return "q"
-        if choice in ("1", "q", ""):
+            return "b"
+        if choice == "":
+            return "b"
+        if choice in ("1", "2", "b", "q"):
             return choice
         console.print("  [dim]Invalid selection. Try again.[/dim]")
+
+
+def show_color_picker():
+    """Live accent-color picker. Returns 'quit' to quit, else None (back)."""
+    while True:
+        current = config.get_setting("accent_color")
+        show_welcome()  # the tuna redraws in the current accent — instant preview
+        console.print(f"  [bold {ACCENT}]Accent color[/bold {ACCENT}]")
+        console.print("  [dim]Pick a number to recolor the interface.[/dim]")
+        console.print()
+        for i, c in enumerate(art.ACCENT_COLORS, 1):
+            mark = "  [dim]← current[/dim]" if c == current else ""
+            console.print(f"  [bold]{i}.[/bold] [{c}]{c}[/{c}] [{c}]████████[/{c}]{mark}")
+        console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
+        console.print()
+        try:
+            raw = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if raw == "q":
+            return "quit"
+        if raw in ("b", ""):
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(art.ACCENT_COLORS):
+            chosen = art.ACCENT_COLORS[int(raw) - 1]
+            set_accent(chosen)
+            config.set_setting("accent_color", chosen)
+        else:
+            console.print("  [dim]Invalid selection.[/dim]")
+
+
+def _commands_table() -> Table:
+    """A two-column table of every command, grouped by screen."""
+    table = Table.grid(padding=(0, 3))
+    table.add_column(justify="right", style=f"bold {ACCENT}", no_wrap=True)
+    table.add_column()
+    rows = [
+        (f"[{ACCENT2}]Menu[/]", ""),
+        ("1 / 2", "Play a YouTube URL / KHInsider album"),
+        ("3 / 4", "Recently played / Settings"),
+        ("d", "Debug / Logs"),
+        ("", ""),
+        (f"[{ACCENT2}]Player[/]", ""),
+        ("space", "Play / pause"),
+        ("← / →", "Seek −/+ 10s"),
+        (", / .", "Seek −/+ 30s"),
+        ("↑ / ↓ , + / −", "Volume"),
+        ("m", "Mute"),
+        ("n / p", "Next / previous track"),
+        ("h", "Toggle help"),
+        ("", ""),
+        (f"[{ACCENT2}]Everywhere[/]", ""),
+        ("b", "Back (one screen)"),
+        ("q", "Quit tunetape"),
+        ("enter", "Select / confirm"),
+    ]
+    for left, right in rows:
+        table.add_row(left, right)
+    return table
+
+
+def show_help():
+    """Render the command reference. Returns 'quit' to quit, else None (back)."""
+    console.clear()
+    console.print(art.render_welcome())
+    console.print(Panel(
+        _commands_table(),
+        title=f"[bold {ACCENT}]Help · Commands[/]",
+        border_style=ACCENT,
+        padding=(1, 3),
+        expand=False,
+    ))
+    console.print()
+    console.print("  [dim]enter or b to go back  ·  q to quit[/dim]")
+    try:
+        raw = input("  > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return "quit" if raw == "q" else None
+
+
+def show_debug():
+    """Render the Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
+    while True:
+        console.clear()
+        console.print()
+        console.print(f"  [bold {ACCENT}]Debug / Logs[/]  [dim]· this session[/dim]")
+        console.print()
+        mpv = "[green]ok[/green]" if shutil.which("mpv") else "[red]missing[/red]"
+        ytdlp = "[green]ok[/green]" if shutil.which("yt-dlp") else "[red]missing[/red]"
+        console.print(
+            f"  [dim]tunetape[/dim] {escape(__version__)}   "
+            f"[dim]mpv[/dim] {mpv}   [dim]yt-dlp[/dim] {ytdlp}"
+        )
+        console.print(f"  [dim]data dir[/dim] {escape(paths.data_dir())}")
+        console.print()
+        records = debug.entries()
+        if not records:
+            console.print("  [dim]No events logged yet this session.[/dim]")
+        else:
+            for ts, level, msg in records[-200:]:
+                color = {"ERROR": "red", "WARN": "yellow", "WARNING": "yellow"}.get(level, "dim")
+                try:
+                    stamp = ts.astimezone().strftime("%H:%M:%S")
+                except (ValueError, OSError):
+                    stamp = "--:--:--"
+                console.print(
+                    f"  [dim]{stamp}[/dim] [{color}]{level:<5}[/{color}] {escape(msg)}"
+                )
+        console.print()
+        console.print("  [dim]c clear  ·  b back  ·  q quit[/dim]")
+        try:
+            raw = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if raw == "q":
+            return "quit"
+        if raw in ("b", ""):
+            return None
+        if raw == "c":
+            debug.clear()
 
 
 def _format_time(seconds: float) -> str:
@@ -267,7 +497,19 @@ def _build_progress_bar(position: float, duration: float, width: int = 40) -> st
     else:
         fraction = min(max(position / duration, 0.0), 1.0)
     filled = int(width * fraction)
-    return "[cyan]" + "\u2501" * filled + "[/cyan][dim]" + "\u2501" * (width - filled) + "[/dim]"
+    return f"[{ACCENT}]" + "\u2501" * filled + f"[/{ACCENT}][dim]" + "\u2501" * (width - filled) + "[/dim]"
+
+
+def _volume_bar(volume: float, muted: bool, width: int = 12) -> str:
+    """Build a YouTube-style volume meter: 'Vol [\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591] 75%' markup."""
+    pct = int(round(volume))
+    if muted:
+        bar = "[dim]" + "\u2591" * width + "[/dim]"
+        return f"[dim]Vol[/dim] {bar} [yellow]muted[/yellow]"
+    frac = min(max(volume / 100.0, 0.0), 1.0)
+    filled = int(round(width * frac))
+    bar = f"[{ACCENT}]" + "\u2588" * filled + f"[/{ACCENT}][dim]" + "\u2591" * (width - filled) + "[/dim]"
+    return f"[dim]Vol[/dim] {bar} {pct}%"
 
 
 class PlayerUI:
@@ -283,6 +525,7 @@ class PlayerUI:
         self._result_lock = threading.Lock()
         self._display_ready = threading.Event()
         self._display_error = None
+        self._show_help = False
 
     def _set_result(self, value: str):
         """Thread-safe first-writer-wins result setter."""
@@ -347,6 +590,8 @@ class PlayerUI:
                     self.controller.set_volume_relative(-5)
                 elif ch == "m":
                     self.controller.toggle_mute()
+                elif ch == "h":
+                    self._show_help = not self._show_help
                 elif ch == "\x1b":
                     # [#6] Use select with timeout to avoid blocking on bare ESC
                     esc_ready, _, _ = select.select([sys.stdin], [], [], 0.05)
@@ -372,6 +617,28 @@ class PlayerUI:
         self._stop.set()
         display_thread.join(timeout=3)
         return self._result
+
+    def _player_controls(self):
+        """Boxed control buttons, or the full help table when help is toggled."""
+        if self._show_help:
+            return Panel(
+                _commands_table(), title=f"[bold {ACCENT}]Help \u00b7 Commands[/]",
+                border_style=ACCENT, padding=(0, 2), expand=False,
+            )
+        items = [
+            ("space", "play/pause"),
+            ("\u25c4 \u25ba", "seek 10s"),
+            (", .", "seek 30s"),
+            ("\u2191 \u2193", "volume"),
+            ("m", "mute"),
+        ]
+        if self.playlist_info:
+            if self.playlist_info.get("has_next"):
+                items.append(("n", "next"))
+            if self.playlist_info.get("has_prev"):
+                items.append(("p", "prev"))
+        items += [("h", "help"), ("b", "back"), ("q", "quit")]
+        return Padding(button_row(items), (0, 0, 0, 2))
 
     def _display_loop(self):
         """Poll controller and render the player display."""
@@ -403,28 +670,14 @@ class PlayerUI:
                     dur_str = _format_time(duration)
                     bar = _build_progress_bar(position, duration)
                     status = "[yellow]Paused[/yellow]" if paused else "[green]Playing[/green]"
-                    vol_str = "[yellow]Muted[/yellow]" if muted else f"[dim]Vol[/dim] {int(volume)}%"
+                    vol_str = _volume_bar(volume, muted)
 
                     track_line = ""
                     if self.playlist_info:
                         track_line = f"  [dim]Track {self.playlist_info['track_label']}[/dim]\n"
 
-                    if self.playlist_info:
-                        controls = (
-                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s[/dim]\n"
-                            f"  [dim]\\[\u2191/\u2193 or +/-] volume  \\[m] mute[/dim]\n"
-                            f"  [dim]\\[n] next track  \\[p] prev track[/dim]\n"
-                            f"  [dim]\\[b] back  \\[q] quit[/dim]\n"
-                        )
-                    else:
-                        controls = (
-                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s[/dim]\n"
-                            f"  [dim]\\[\u2191/\u2193 or +/-] volume  \\[m] mute  \\[b] back  \\[q] quit[/dim]\n"
-                        )
-
-                    display = Text.from_markup(
-                        f"\n"
-                        f"  [bold cyan]tunetape[/bold cyan] [dim]- Terminal Audio Player[/dim]\n"
+                    info = Text.from_markup(
+                        f"\n  [bold {ACCENT}]tunetape[/bold {ACCENT}] [dim]\u00b7 Terminal Audio Player[/dim]\n"
                         f"\n"
                         f"  [bold]Now Playing:[/bold] {self.title}\n"
                         f"{track_line}"
@@ -432,14 +685,14 @@ class PlayerUI:
                         f"  {pos_str} {bar} {dur_str}\n"
                         f"\n"
                         f"  > {status}   {vol_str}\n"
-                        f"\n"
-                        f"{controls}"
                     )
+                    display = Group(info, self._player_controls())
 
                     live.update(display)
                     time.sleep(0.5)
         except Exception as exc:
             self._display_error = exc
+            debug.exception("Player display loop crashed", exc)
         finally:
             self._display_ready.set()
             self._stop.set()

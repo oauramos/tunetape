@@ -2,13 +2,14 @@ import atexit
 import signal
 import sys
 
-from tunetape import __version__, config, history
+from tunetape import __version__, config, debug, history
 from tunetape.player import MPVController, check_dependencies, get_stream_info
 from tunetape.khinsider import fetch_album, resolve_track_url
 from tunetape.playlist import Playlist
 from tunetape.ui import (
-    PlayerUI, show_error, show_history, show_loading, show_menu, show_settings,
-    show_welcome, prompt_url, prompt_khinsider_url, save_terminal_state,
+    PlayerUI, main_menu_loop, set_accent, show_color_picker, show_debug,
+    show_error, show_help, show_history, show_settings, show_welcome,
+    with_spinner, prompt_url, prompt_khinsider_url, save_terminal_state,
     restore_terminal_state, console,
 )
 
@@ -47,8 +48,7 @@ def _play_youtube(url: str, normalize: bool) -> str:
         return "menu"
 
     try:
-        show_loading(url)
-        info = get_stream_info(url)
+        info = with_spinner("Fetching stream…", get_stream_info, url)
     except (ValueError, ConnectionError, RuntimeError) as e:
         show_error(str(e))
         return "menu"
@@ -57,11 +57,13 @@ def _play_youtube(url: str, normalize: bool) -> str:
     try:
         controller = MPVController(info["stream_url"], normalize=normalize)
         _active_controller = controller
+        debug.log(f"Now playing (YouTube): {info['title']}")
         history.record("youtube", url, info["title"])
         ui = PlayerUI(info["title"], controller)
         result = ui.run()
     except Exception as e:
         if controller is None:
+            debug.exception("YouTube playback failed to start", e)
             show_error(f"Could not start player: {e}")
             return "menu"
         raise
@@ -78,13 +80,13 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
     global _active_controller
 
     try:
-        console.print("  [dim]Fetching album...[/dim]")
-        album = fetch_album(url)
+        album = with_spinner("Fetching album…", fetch_album, url)
     except (ValueError, RuntimeError, OSError) as e:
         show_error(str(e))
         return "menu"
 
     playlist = Playlist(album, start_index=start_index)
+    debug.log(f"Album loaded: {album.title} ({playlist.total_tracks} tracks)")
     # Record the album once when playback begins (bumps play_count); the resume
     # position is refreshed per-track via set_last_index without bumping it.
     history.record(
@@ -104,8 +106,9 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
             failed = False
             direct_url = None
             try:
-                console.print(f"  [dim]Loading track {playlist.track_label}...[/dim]")
-                direct_url = resolve_track_url(track)
+                direct_url = with_spinner(
+                    f"Loading track {playlist.track_label}…", resolve_track_url, track
+                )
             except (RuntimeError, OSError) as e:
                 show_error(f"Could not load track: {e}")
                 failed = True
@@ -126,6 +129,7 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
                     consecutive_failures = 0
                 except Exception as e:
                     if controller is None:
+                        debug.exception("Track playback failed to start", e)
                         show_error(f"Could not start player: {e}")
                         failed = True
                     else:
@@ -170,6 +174,8 @@ def _recently_played(normalize: bool) -> str:
 
         if action == "back":
             return "menu"
+        elif action == "quit":
+            return "quit"
         elif action == "delete":
             if payload:
                 history.remove(payload)
@@ -197,16 +203,21 @@ def _recently_played(normalize: bool) -> str:
             return "quit" if result == "quit" else "menu"
 
 
-def _settings_menu():
-    """Show the settings screen and persist toggles."""
+def _settings_menu() -> str:
+    """Show the settings screen and persist toggles. Returns 'menu'/'quit'."""
     while True:
         normalize = bool(config.get_setting("normalize_volume"))
         show_welcome()
         choice = show_settings(normalize)
-        if choice in ("q", ""):
-            return
+        if choice == "q":
+            return "quit"
+        if choice in ("b", ""):
+            return "menu"
         elif choice == "1":
             config.set_setting("normalize_volume", not normalize)
+        elif choice == "2":
+            if show_color_picker() == "quit":
+                return "quit"
 
 
 def main():
@@ -225,26 +236,32 @@ def main():
         show_error(str(e))
         return
 
+    # Apply the user's saved accent color before anything is drawn.
+    set_accent(config.get_setting("accent_color"))
+
     while True:
         normalize = bool(config.get_setting("normalize_volume"))
-        show_welcome()
-        choice = show_menu()
+        choice = main_menu_loop()
 
         if choice == "q":
             break
         elif choice == "1":
             show_welcome()
             url = prompt_url()
-            if not url.strip():
-                show_error("No URL entered. Please paste a YouTube URL.")
-                continue
+            cmd = url.strip().lower()
+            if cmd == "q":
+                break
+            if cmd in ("", "b"):
+                continue  # empty / back -> return to menu
             if _play_youtube(url, normalize) == "quit":
                 break
         elif choice == "2":
             show_welcome()
             url = prompt_khinsider_url()
-            if not url.strip():
-                show_error("No URL entered.")
+            cmd = url.strip().lower()
+            if cmd == "q":
+                break
+            if cmd in ("", "b"):
                 continue
             if _play_khinsider(url, normalize) == "quit":
                 break
@@ -252,7 +269,14 @@ def main():
             if _recently_played(normalize) == "quit":
                 break
         elif choice == "4":
-            _settings_menu()
+            if _settings_menu() == "quit":
+                break
+        elif choice == "h":
+            if show_help() == "quit":
+                break
+        elif choice == "d":
+            if show_debug() == "quit":
+                break
 
 
 if __name__ == "__main__":
