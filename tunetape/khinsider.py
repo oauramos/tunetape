@@ -23,6 +23,12 @@ _KHINSIDER_RE = re.compile(
     r"^https?://downloads\.khinsider\.com/game-soundtracks/album/.+"
 )
 
+# Audio extensions tunetape can stream — single source of truth so the
+# album-page link filter (_TRACK_LINK_EXTS) and the CDN link matcher
+# (_CDN_AUDIO_RE, built from the same tuple below) can never drift apart.
+_AUDIO_EXTS = ("mp3", "flac", "ogg", "m4a", "wav")
+_TRACK_LINK_EXTS = tuple("." + ext for ext in _AUDIO_EXTS)
+
 
 def is_khinsider_url(url: str) -> bool:
     return bool(_KHINSIDER_RE.match(url.strip()))
@@ -56,7 +62,7 @@ class _AlbumPageParser(HTMLParser):
 
         if tag == "a":
             href = attrs_dict.get("href", "")
-            if self._album_path in href and href.endswith(".mp3"):
+            if self._album_path in href and href.lower().endswith(_TRACK_LINK_EXTS):
                 full_url = urllib.parse.urljoin(
                     "https://downloads.khinsider.com", href
                 )
@@ -91,7 +97,7 @@ class _AlbumPageParser(HTMLParser):
 
 
 _CDN_AUDIO_RE = re.compile(
-    r"https?://.*\.(mp3|flac|ogg|m4a)(\?.*)?$", re.IGNORECASE
+    r"https?://.*\.(" + "|".join(_AUDIO_EXTS) + r")(\?.*)?$", re.IGNORECASE
 )
 
 
@@ -129,7 +135,11 @@ def fetch_album(url: str) -> Album:
     parser.feed(html)
 
     if not parser.tracks:
-        raise ValueError(f"No tracks found on album page: {url}")
+        raise ValueError(
+            "No tracks found on the album page. Double-check the URL, "
+            "or KHInsider's page format may have changed.\n\n"
+            f"URL: {url}"
+        )
 
     title = parser.title.strip() or "Unknown Album"
     tracks = [
@@ -149,7 +159,10 @@ def resolve_track_url(track: Track) -> str:
     parser.feed(html)
 
     if not parser.direct_url:
-        raise RuntimeError(f"Could not find download link for: {track.name}")
+        raise RuntimeError(
+            f"Could not find a download link for '{track.name}'. "
+            "KHInsider's page format may have changed."
+        )
 
     track.direct_url = parser.direct_url
     return track.direct_url

@@ -5,6 +5,7 @@ import termios
 import threading
 import time
 import tty
+from datetime import datetime, timezone
 
 from rich.console import Console
 from rich.live import Live
@@ -90,6 +91,8 @@ def show_menu() -> str:
     """Render main menu and return user choice."""
     console.print("  [bold]1.[/bold] Play YouTube URL")
     console.print("  [bold]2.[/bold] Play KHInsider Album")
+    console.print("  [bold]3.[/bold] Recently played")
+    console.print("  [bold]4.[/bold] Settings")
     console.print("  [bold]q.[/bold] Quit")
     console.print()
     try:
@@ -122,9 +125,13 @@ def prompt_khinsider_url() -> str:
     return url.strip()
 
 
-def show_loading(url: str):
+def show_loading(url: str = ""):
     """Display status message while fetching stream info."""
-    console.print("  [dim]Fetching stream...[/dim]")
+    if url:
+        shown = url if len(url) <= 60 else url[:57] + "..."
+        console.print(f"  [dim]Fetching stream... {escape(shown)}[/dim]")
+    else:
+        console.print("  [dim]Fetching stream...[/dim]")
 
 
 def show_error(message: str):
@@ -142,6 +149,106 @@ def show_error(message: str):
         input()
     except (EOFError, KeyboardInterrupt):
         pass
+
+
+def _humanize_time(iso_str) -> str:
+    """Render an ISO timestamp as a coarse 'time ago' string."""
+    if not iso_str:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso_str)
+    except (TypeError, ValueError):
+        return "—"
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
+    if secs < 0:
+        secs = 0
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    days = secs // 86400
+    if days < 30:
+        return f"{days}d ago"
+    if days < 365:
+        return f"{days // 30}mo ago"
+    return f"{days // 365}y ago"
+
+
+def show_history(entries: list) -> tuple:
+    """Render the recently-played list and return an (action, payload) tuple.
+
+    action is one of:
+      'play'   -> payload is the selected entry dict
+      'delete' -> payload is the url to remove
+      'clear'  -> payload is None
+      'back'   -> payload is None
+    """
+    console.print()
+    console.print("  [bold cyan]Recently played[/bold cyan]")
+    console.print()
+    for i, e in enumerate(entries, 1):
+        tag = "YT" if e.get("type") == "youtube" else "KH"
+        title = escape(str(e.get("title", "Unknown")))
+        plays = e.get("play_count", 1)
+        when = _humanize_time(e.get("last_played"))
+        extra = ""
+        if e.get("type") == "khinsider":
+            tc = e.get("track_count")
+            li = int(e.get("last_index", 0) or 0)
+            extra = f" [dim]· resume {li + 1}/{tc}[/dim]" if tc else f" [dim]· resume {li + 1}[/dim]"
+        console.print(
+            f"  [bold]{i:>2}.[/bold] [dim]\\[{tag}][/dim] {title}{extra}"
+            f"  [dim]· {plays}× · {when}[/dim]"
+        )
+    console.print()
+    console.print(
+        "  [dim]number to play  ·  d <n> delete  ·  c clear all  ·  q back[/dim]"
+    )
+    console.print()
+    while True:
+        try:
+            raw = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return ("back", None)
+        if raw in ("q", ""):
+            return ("back", None)
+        if raw == "c":
+            return ("clear", None)
+        if raw.startswith("d"):
+            num = raw[1:].strip()
+            if num.isdigit():
+                idx = int(num) - 1
+                if 0 <= idx < len(entries):
+                    return ("delete", entries[idx].get("url"))
+        elif raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(entries):
+                return ("play", entries[idx])
+        console.print("  [dim]Invalid selection. Try again.[/dim]")
+
+
+def show_settings(normalize_on: bool) -> str:
+    """Render the settings screen and return a validated choice ('1' or 'q')."""
+    console.print()
+    console.print("  [bold cyan]Settings[/bold cyan]")
+    console.print()
+    state = "[green]on[/green]" if normalize_on else "[dim]off[/dim]"
+    console.print(f"  [bold]1.[/bold] Volume normalization: {state}")
+    console.print("     [dim]Evens out loudness across tracks and sources.[/dim]")
+    console.print("  [bold]q.[/bold] Back")
+    console.print()
+    while True:
+        try:
+            choice = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return "q"
+        if choice in ("1", "q", ""):
+            return choice
+        console.print("  [dim]Invalid selection. Try again.[/dim]")
 
 
 def _format_time(seconds: float) -> str:
@@ -234,6 +341,12 @@ class PlayerUI:
                     self.controller.seek(30)
                 elif ch == ",":
                     self.controller.seek(-30)
+                elif ch in ("+", "="):
+                    self.controller.set_volume_relative(5)
+                elif ch in ("-", "_"):
+                    self.controller.set_volume_relative(-5)
+                elif ch == "m":
+                    self.controller.toggle_mute()
                 elif ch == "\x1b":
                     # [#6] Use select with timeout to avoid blocking on bare ESC
                     esc_ready, _, _ = select.select([sys.stdin], [], [], 0.05)
@@ -247,6 +360,10 @@ class PlayerUI:
                                     self.controller.seek(10)
                                 elif seq2 == "D":  # Left
                                     self.controller.seek(-10)
+                                elif seq2 == "A":  # Up
+                                    self.controller.set_volume_relative(5)
+                                elif seq2 == "B":  # Down
+                                    self.controller.set_volume_relative(-5)
                 elif ch == "\x03":  # Ctrl+C
                     self._set_result("quit")
         finally:
@@ -276,6 +393,8 @@ class PlayerUI:
                         position = self.controller.get_position()
                         duration = self.controller.get_duration()
                         paused = self.controller.is_paused()
+                        volume = self.controller.get_volume()
+                        muted = self.controller.is_muted()
                     except Exception:
                         self._set_result("menu")
                         break
@@ -284,6 +403,7 @@ class PlayerUI:
                     dur_str = _format_time(duration)
                     bar = _build_progress_bar(position, duration)
                     status = "[yellow]Paused[/yellow]" if paused else "[green]Playing[/green]"
+                    vol_str = "[yellow]Muted[/yellow]" if muted else f"[dim]Vol[/dim] {int(volume)}%"
 
                     track_line = ""
                     if self.playlist_info:
@@ -292,12 +412,14 @@ class PlayerUI:
                     if self.playlist_info:
                         controls = (
                             f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s[/dim]\n"
+                            f"  [dim]\\[\u2191/\u2193 or +/-] volume  \\[m] mute[/dim]\n"
                             f"  [dim]\\[n] next track  \\[p] prev track[/dim]\n"
                             f"  [dim]\\[b] back  \\[q] quit[/dim]\n"
                         )
                     else:
                         controls = (
-                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s  \\[b] back  \\[q] quit[/dim]\n"
+                            f"  [dim]\\[space] play/pause  \\[\u2190/\u2192] -/+10s  \\[,/.] -/+30s[/dim]\n"
+                            f"  [dim]\\[\u2191/\u2193 or +/-] volume  \\[m] mute  \\[b] back  \\[q] quit[/dim]\n"
                         )
 
                     display = Text.from_markup(
@@ -309,7 +431,7 @@ class PlayerUI:
                         f"\n"
                         f"  {pos_str} {bar} {dur_str}\n"
                         f"\n"
-                        f"  > {status}\n"
+                        f"  > {status}   {vol_str}\n"
                         f"\n"
                         f"{controls}"
                     )

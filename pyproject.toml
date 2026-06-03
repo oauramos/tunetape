@@ -4,14 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tunetape"
-version = "0.2.7"
+version = "0.4.0"
 description = "Terminal YouTube audio player"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "oauramos" }]
+keywords = ["terminal", "audio", "player", "youtube", "mpv", "yt-dlp", "tui", "cli", "music"]
 classifiers = [
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: MacOS",
     "Operating System :: POSIX",
     "Environment :: Console",
@@ -21,12 +27,19 @@ dependencies = [
     "rich>=13.0,<15",
 ]
 
+[project.optional-dependencies]
+test = ["pytest>=7.0"]
+
 [project.urls]
 Homepage = "https://github.com/oauramos/tunetape"
 Repository = "https://github.com/oauramos/tunetape"
+Issues = "https://github.com/oauramos/tunetape/issues"
 
 [tool.setuptools.packages.find]
 include = ["tunetape*"]
 
 [project.scripts]
 tunetape = "tunetape.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

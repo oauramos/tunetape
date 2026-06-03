@@ -7,20 +7,28 @@ from tunetape.khinsider import Album, Track
 
 
 class Playlist:
-    def __init__(self, album: Album):
+    def __init__(self, album: Album, start_index: int = 0):
         self._album = album
-        self._index = 0
+        n = len(album.tracks)
+        # Clamp the resume index so a shrunk album can't IndexError.
+        self._index = max(0, min(start_index, n - 1)) if n else 0
         # Create temp cache file
         fd, self._cache_path = tempfile.mkstemp(
             prefix="tunetape_playlist_", suffix=".json"
         )
         os.close(fd)
+        # Safety net if the process is killed; close() handles the normal path
+        # and unregisters this so handlers don't accumulate across albums.
         atexit.register(self._cleanup)
         self._save_cache()
 
     @property
     def current_track(self) -> Track:
         return self._album.tracks[self._index]
+
+    @property
+    def current_index(self) -> int:
+        return self._index
 
     @property
     def track_label(self) -> str:
@@ -71,6 +79,14 @@ class Playlist:
             with open(self._cache_path, "w") as f:
                 json.dump(data, f)
         except OSError:
+            pass
+
+    def close(self):
+        """Remove the temp cache and drop the atexit handler. Idempotent."""
+        self._cleanup()
+        try:
+            atexit.unregister(self._cleanup)
+        except Exception:
             pass
 
     def _cleanup(self):

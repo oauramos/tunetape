@@ -5,10 +5,8 @@ Tests 30 YouTube music URLs against the player backend.
 Verifies: URL validation, stream extraction, and mpv playback (3s each).
 """
 
-import subprocess
 import sys
 import time
-import json
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -63,12 +61,11 @@ class Colors:
     RESET = "\033[0m"
 
 
-def test_stream_extraction(name, url):
+def check_stream_extraction(name, url):
     """Test if yt-dlp can extract the audio stream URL."""
     try:
         info = get_stream_info(url)
         title = info["title"]
-        has_stream = info["stream_url"].startswith("http")
         return True, title, info["stream_url"]
     except ValueError as e:
         return False, f"Invalid URL: {e}", None
@@ -78,28 +75,29 @@ def test_stream_extraction(name, url):
         return False, f"Extraction failed: {e}", None
 
 
-def test_playback(stream_url, seconds=3):
-    """Test if mpv can play the stream for N seconds."""
-    sock_path = f"/tmp/tunetape_test_{os.getpid()}.sock"
+def check_playback(stream_url, seconds=3):
+    """Test if mpv can play the stream for N seconds via the real controller."""
     try:
-        proc = subprocess.Popen(
-            ["mpv", "--no-video", "--no-terminal",
-             f"--input-ipc-server={sock_path}", stream_url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        time.sleep(seconds)
-        alive = proc.poll() is None
-        proc.terminate()
-        proc.wait(timeout=3)
-        return alive
-    except Exception as e:
+        controller = MPVController(stream_url)
+    except Exception:
         return False
+    try:
+        time.sleep(seconds)
+        return controller.is_alive()
     finally:
-        if os.path.exists(sock_path):
-            os.unlink(sock_path)
+        controller.quit()
 
 
 def main():
+    if not os.environ.get("TUNETAPE_NETWORK_TESTS"):
+        print()
+        print("  This is a live network/playback script (hits YouTube + mpv).")
+        print("  Re-run with TUNETAPE_NETWORK_TESTS=1 to confirm you want that:")
+        print()
+        print("    TUNETAPE_NETWORK_TESTS=1 python tests/test_urls.py")
+        print()
+        sys.exit(0)
+
     print()
     print(f"  {Colors.BOLD}{Colors.CYAN}tunetape Test Agent{Colors.RESET}")
     print(f"  {Colors.DIM}Testing {len(TEST_URLS)} YouTube URLs{Colors.RESET}")
@@ -123,7 +121,7 @@ def main():
         print(f"{prefix} {Colors.DIM}Testing:{Colors.RESET} {name}")
 
         # Phase 1: Stream extraction
-        ok, title, stream_url = test_stream_extraction(name, url)
+        ok, title, stream_url = check_stream_extraction(name, url)
         if not ok:
             print(f"{prefix} {Colors.RED}[FAIL]{Colors.RESET} Extract: {title}")
             results["fail_extract"] += 1
@@ -133,7 +131,7 @@ def main():
         print(f"{prefix} {Colors.GREEN}[ok]{Colors.RESET}   Extract: {title[:50]}")
 
         # Phase 2: Playback test (3 seconds)
-        played = test_playback(stream_url, seconds=3)
+        played = check_playback(stream_url, seconds=3)
         if played:
             print(f"{prefix} {Colors.GREEN}[ok]{Colors.RESET}   Playback: 3s OK")
             results["pass"] += 1

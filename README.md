@@ -36,21 +36,38 @@ tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard co
 - **YouTube** — paste any YouTube URL. Audio extracted via **yt-dlp**.
 - **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
+**Remembers what you play:** every YouTube title and KHInsider album lands in a **Recently played** menu, so you can jump back in — albums even resume at the track you left off. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
+
 ---
 
 ## Install
 
-One command. Installs everything automatically (Python, mpv, yt-dlp):
+One command via [Homebrew](https://brew.sh) — pulls in everything (Python, mpv, yt-dlp; FFmpeg rides along with mpv):
+
+```bash
+brew install oauramos/tunetape/tunetape
+```
+
+Then run:
+
+```bash
+tunetape
+```
+
+> `oauramos/tunetape` is a Homebrew *tap*; brew adds it automatically the first time.
+
+<details>
+<summary><b>Alternative: install script</b></summary>
+
+<br>
+
+Prefer not to tap? A script installs everything into `~/.tunetape`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh | bash
 ```
 
-That's it. Now run:
-
-```bash
-tunetape
-```
+</details>
 
 <details>
 <summary><b>Manual install</b></summary>
@@ -76,9 +93,19 @@ pip install .
 
 <br>
 
+Homebrew:
+
 ```bash
-rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
+brew uninstall tunetape && brew untap oauramos/tunetape
 ```
+
+Install script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh | bash -s uninstall
+```
+
+> Your listening history in `~/.local/share/tunetape/` is left in place — delete that folder too for a full wipe.
 
 </details>
 
@@ -123,6 +150,9 @@ rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
 | `<--` | Seek backward 10s |
 | `.` | Seek forward 30s |
 | `,` | Seek backward 30s |
+| `↑` / `+` | Volume up |
+| `↓` / `-` | Volume down |
+| `m` | Mute / unmute |
 | `b` | Back to menu |
 | `q` | Quit |
 
@@ -134,6 +164,17 @@ rm -rf ~/.tunetape && sudo rm /usr/local/bin/tunetape
 | `p` | Previous track |
 
 Tracks auto-advance when they finish.
+
+### Recently Played
+
+Open it from the main menu to re-listen to anything you've played before (albums resume where you left off):
+
+| Key | Action |
+|:---:|--------|
+| number | Play that entry |
+| `d <n>` | Delete entry *n* |
+| `c` | Clear all history |
+| `q` | Back |
 
 ---
 
@@ -149,7 +190,9 @@ Tracks auto-advance when they finish.
 
 - macOS (uses Unix sockets + termios)
 - Python 3.9+
-- Homebrew (auto-installed if missing)
+- [Homebrew](https://brew.sh) (for the recommended install; the script installs it automatically if missing)
+
+> Listening history and settings live in `~/.local/share/tunetape/` and persist across upgrades.
 
 ---
 

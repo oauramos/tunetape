@@ -52,8 +52,13 @@ fi
 # Check/install Homebrew
 if ! command -v brew &>/dev/null; then
     echo "  [*] Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-    # Source brew into current session
+    # NONINTERACTIVE so the installer doesn't block on a prompt under `curl | bash`.
+    NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+fi
+
+# Source brew into the current session whenever it exists (not just when we
+# installed it) — brew may be present but missing from this non-login shell's PATH.
+if ! command -v brew &>/dev/null; then
     if [[ -x /opt/homebrew/bin/brew ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     elif [[ -x /usr/local/bin/brew ]]; then
@@ -82,10 +87,14 @@ fi
 
 # Create venv and install
 echo "  [*] Setting up Python environment..."
-python3 -m venv --without-pip "$INSTALL_DIR/.venv"
-curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$INSTALL_DIR/.venv/bin/python3" - -q
-"$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
-"$INSTALL_DIR/.venv/bin/pip" install "$INSTALL_DIR" -q
+python3 -m venv "$INSTALL_DIR/.venv"
+# Most python3 builds (Homebrew's included) ship pip via ensurepip. Only fall
+# back to the network bootstrap if pip is genuinely missing.
+if [[ ! -x "$INSTALL_DIR/.venv/bin/pip" ]]; then
+    curl -fsSL https://bootstrap.pypa.io/get-pip.py | "$INSTALL_DIR/.venv/bin/python3" -
+fi
+"$INSTALL_DIR/.venv/bin/python3" -m pip install --upgrade pip -q
+"$INSTALL_DIR/.venv/bin/python3" -m pip install "$INSTALL_DIR" -q
 
 # [#14] Install to ~/.local/bin instead of /usr/local/bin — no sudo needed
 echo "  [*] Creating tunetape command..."
