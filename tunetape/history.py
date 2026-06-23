@@ -19,7 +19,10 @@ from tunetape import paths
 
 MAX_ENTRIES = 50
 _VERSION = 1
-VALID_TYPES = ("youtube", "khinsider")
+VALID_TYPES = ("youtube", "youtube_playlist", "spotify", "khinsider")
+# Types that are multi-track collections — they carry track_count + a resume
+# (last_index); single YouTube videos do not.
+_MULTI_TRACK_TYPES = ("khinsider", "spotify", "youtube_playlist")
 
 
 def _history_path() -> str:
@@ -50,7 +53,7 @@ def load() -> list:
         if not (isinstance(e, dict) and e.get("url")):
             continue
         e["play_count"] = _as_int(e.get("play_count", 1), 1)
-        if e.get("type") == "khinsider":
+        if e.get("type") in _MULTI_TRACK_TYPES:
             e["last_index"] = _as_int(e.get("last_index", 0), 0)
         healed.append(e)
     return healed
@@ -83,7 +86,7 @@ def record(entry_type: str, url: str, title: str, *, track_count=None, last_inde
             "last_played": datetime.now(timezone.utc).isoformat(),
             "play_count": play_count,
         }
-        if entry_type == "khinsider":
+        if entry_type in _MULTI_TRACK_TYPES:
             entry["track_count"] = track_count
             entry["last_index"] = int(last_index or 0)
         kept.insert(0, entry)
@@ -93,12 +96,12 @@ def record(entry_type: str, url: str, title: str, *, track_count=None, last_inde
 
 
 def set_last_index(url: str, last_index: int) -> None:
-    """Update a KHInsider entry's resume position without bumping play_count."""
+    """Update a collection entry's resume position without bumping play_count."""
     try:
         entries = load()
         changed = False
         for e in entries:
-            if e.get("url") == url and e.get("type") == "khinsider":
+            if e.get("url") == url and e.get("type") in _MULTI_TRACK_TYPES:
                 e["last_index"] = int(last_index or 0)
                 e["last_played"] = datetime.now(timezone.utc).isoformat()
                 changed = True

@@ -96,14 +96,13 @@ def button_row(items) -> Columns:
     return Columns([key_cap(k, l) for k, l in items], padding=(0, 1), expand=False)
 
 
-# Two rows of menu buttons: actions on top, utility keys below. Labels are
-# kept short so all four fit on one line; full descriptions are on the Help
-# screen (_commands_table).
+# Two rows of menu buttons: actions on top, utility keys below. A single "Play"
+# entry takes any supported URL (YouTube / Spotify / KHInsider) and auto-detects
+# the source; full descriptions are on the Help screen (_commands_table).
 _MENU_ROW1 = [
-    ("1", "YouTube"),
-    ("2", "KHInsider"),
-    ("3", "History"),
-    ("4", "Settings"),
+    ("1", "Play"),
+    ("2", "History"),
+    ("3", "Settings"),
 ]
 _MENU_ROW2 = [
     ("h", "Help"),
@@ -131,7 +130,7 @@ def _button_row(items) -> Table:
 
 
 def _menu_buttons_grid() -> Padding:
-    """Boxed menu buttons in two rows: [1 2 3 4] then [h d q]."""
+    """Boxed menu buttons in two rows: [1 2 3] then [h d q]."""
     rows = Group(_button_row(_MENU_ROW1), _button_row(_MENU_ROW2))
     return Padding(rows, (0, 0, 0, 8))
 
@@ -200,21 +199,9 @@ def main_menu_loop() -> str:
 
 
 def prompt_url() -> str:
-    """Prompt user for a YouTube URL."""
-    console.print("  Paste YouTube URL:")
-    console.print("  [dim]enter to play  ·  b back  ·  q quit[/dim]")
-    console.print()
-    try:
-        url = input("  > ")
-    except (EOFError, KeyboardInterrupt):
-        return ""
-    return url.strip()
-
-
-def prompt_khinsider_url() -> str:
-    """Prompt user for a KHInsider album URL."""
-    console.print("  Paste KHInsider album URL:")
-    console.print("  [dim]e.g. https://downloads.khinsider.com/game-soundtracks/album/wii-console-background-music[/dim]")
+    """Prompt user for a media URL (YouTube / Spotify / KHInsider, auto-detected)."""
+    console.print("  Paste a YouTube, Spotify, or KHInsider URL:")
+    console.print("  [dim]YouTube video or playlist · Spotify track or playlist · KHInsider album[/dim]")
     console.print("  [dim]enter to play  ·  b back  ·  q quit[/dim]")
     console.print()
     try:
@@ -281,6 +268,15 @@ def _humanize_time(iso_str) -> str:
     return f"{days // 365}y ago"
 
 
+# Short source tags shown in the Recently-played list.
+_HISTORY_TAGS = {
+    "youtube": "YT",
+    "youtube_playlist": "PL",
+    "spotify": "SP",
+    "khinsider": "KH",
+}
+
+
 def show_history(entries: list) -> tuple:
     """Render the recently-played list and return an (action, payload) tuple.
 
@@ -294,15 +290,15 @@ def show_history(entries: list) -> tuple:
     console.print(f"  [bold {ACCENT}]Recently played[/bold {ACCENT}]")
     console.print()
     for i, e in enumerate(entries, 1):
-        tag = "YT" if e.get("type") == "youtube" else "KH"
+        tag = _HISTORY_TAGS.get(e.get("type"), "??")
         title = escape(str(e.get("title", "Unknown")))
         plays = e.get("play_count", 1)
         when = _humanize_time(e.get("last_played"))
         extra = ""
-        if e.get("type") == "khinsider":
-            tc = e.get("track_count")
+        tc = e.get("track_count")
+        if isinstance(tc, int) and tc > 1:
             li = int(e.get("last_index", 0) or 0)
-            extra = f" [dim]· resume {li + 1}/{tc}[/dim]" if tc else f" [dim]· resume {li + 1}[/dim]"
+            extra = f" [dim]· resume {li + 1}/{tc}[/dim]"
         console.print(
             f"  [bold]{i:>2}.[/bold] [dim]\\[{tag}][/dim] {title}{extra}"
             f"  [dim]· {plays}× · {when}[/dim]"
@@ -396,8 +392,8 @@ def _commands_table() -> Table:
     table.add_column()
     rows = [
         (f"[{ACCENT2}]Menu[/]", ""),
-        ("1 / 2", "Play a YouTube URL / KHInsider album"),
-        ("3 / 4", "Recently played / Settings"),
+        ("1", "Play a URL — YouTube / Spotify / KHInsider"),
+        ("2 / 3", "Recently played / Settings"),
         ("d", "Debug / Logs"),
         ("", ""),
         (f"[{ACCENT2}]Player[/]", ""),

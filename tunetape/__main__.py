@@ -2,14 +2,17 @@ import atexit
 import signal
 import sys
 
-from tunetape import __version__, config, debug, history
-from tunetape.player import MPVController, check_dependencies, get_stream_info
-from tunetape.khinsider import fetch_album, resolve_track_url
+from tunetape import __version__, config, debug, history, spotify
+from tunetape.player import (
+    MPVController, check_dependencies, get_stream_info,
+    is_youtube_url, is_youtube_playlist_url, fetch_youtube_playlist,
+)
+from tunetape.khinsider import fetch_album, resolve_track_url, is_khinsider_url
 from tunetape.playlist import Playlist
 from tunetape.ui import (
     PlayerUI, main_menu_loop, set_accent, show_color_picker, show_debug,
     show_error, show_help, show_history, show_settings, show_welcome,
-    with_spinner, prompt_url, prompt_khinsider_url, save_terminal_state,
+    with_spinner, prompt_url, save_terminal_state,
     restore_terminal_state, console,
 )
 
@@ -80,22 +83,23 @@ def _play_youtube(url: str, normalize: bool) -> str:
     return result
 
 
-def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
-    """Fetch and play a KHInsider album from start_index. Returns 'menu'/'quit'."""
-    global _active_controller
+def _play_album(album, *, type: str, url: str, normalize: bool,
+                start_index: int, resolve_fn) -> str:
+    """Play an Album as a navigable playlist. Returns 'menu'/'quit'.
 
-    try:
-        album = with_spinner("Fetching album…", fetch_album, url)
-    except (ValueError, RuntimeError, OSError) as e:
-        show_error(str(e))
-        return "menu"
+    Shared by every multi-track source (KHInsider, Spotify, YouTube playlists).
+    ``resolve_fn(track)`` returns the streamable URL for a track (a per-source
+    lazy resolver); everything else — fail-forward, volume carry-over, resume
+    persistence, Playlist lifecycle — is source-agnostic.
+    """
+    global _active_controller
 
     playlist = Playlist(album, start_index=start_index)
     debug.log(f"Album loaded: {album.title} ({playlist.total_tracks} tracks)")
     # Record the album once when playback begins (bumps play_count); the resume
     # position is refreshed per-track via set_last_index without bumping it.
     history.record(
-        "khinsider", url, album.title,
+        type, url, album.title,
         track_count=playlist.total_tracks,
         last_index=playlist.current_index,
     )
@@ -112,10 +116,10 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
         while True:
             track = playlist.current_track
             failed = False
-            direct_url = None
+            stream_url = None
             try:
-                direct_url = with_spinner(
-                    f"Loading track {playlist.track_label}…", resolve_track_url, track
+                stream_url = with_spinner(
+                    f"Loading track {playlist.track_label}…", resolve_fn, track
                 )
             except (RuntimeError, OSError) as e:
                 show_error(f"Could not load track: {e}")
@@ -125,7 +129,7 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
                 controller = None
                 try:
                     controller = MPVController(
-                        direct_url, normalize=normalize, volume=volume
+                        stream_url, normalize=normalize, volume=volume
                     )
                     _active_controller = controller
                     history.set_last_index(url, playlist.current_index)
@@ -175,6 +179,87 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
     return result
 
 
+def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
+    """Fetch and play a KHInsider album from start_index. Returns 'menu'/'quit'."""
+    try:
+        album = with_spinner("Fetching album…", fetch_album, url)
+    except (ValueError, RuntimeError, OSError) as e:
+        show_error(str(e))
+        return "menu"
+    return _play_album(
+        album, type="khinsider", url=url, normalize=normalize,
+        start_index=start_index, resolve_fn=resolve_track_url,
+    )
+
+
+def _play_spotify(url: str, normalize: bool, start_index: int = 0) -> str:
+    """Fetch and play a Spotify playlist/album/track. Returns 'menu'/'quit'.
+
+    Audio for each track is found by searching YouTube, so yt-dlp is required.
+    """
+    try:
+        check_dependencies(require_ytdlp=True)
+    except RuntimeError as e:
+        show_error(str(e))
+        return "menu"
+    try:
+        album = with_spinner("Fetching Spotify…", spotify.fetch_spotify, url)
+    except (ValueError, RuntimeError, OSError) as e:
+        show_error(str(e))
+        return "menu"
+    return _play_album(
+        album, type="spotify", url=url, normalize=normalize,
+        start_index=start_index, resolve_fn=spotify.resolve_track_url,
+    )
+
+
+def _play_youtube_playlist(url: str, normalize: bool, start_index: int = 0) -> str:
+    """Fetch and play a YouTube playlist. Returns 'menu'/'quit'."""
+    try:
+        check_dependencies(require_ytdlp=True)
+    except RuntimeError as e:
+        show_error(str(e))
+        return "menu"
+    try:
+        album = with_spinner("Fetching playlist…", fetch_youtube_playlist, url)
+    except (ValueError, RuntimeError, OSError) as e:
+        show_error(str(e))
+        return "menu"
+    return _play_album(
+        album, type="youtube_playlist", url=url, normalize=normalize,
+        start_index=start_index,
+        resolve_fn=lambda t: get_stream_info(t.resolve_hint)["stream_url"],
+    )
+
+
+def _play_url(url: str, normalize: bool, start_index: int = 0) -> str:
+    """Detect the source from the URL and play it. Returns 'menu'/'quit'.
+
+    Order matters: a YouTube playlist URL also matches a watch URL, so it must
+    be checked before the single-video case.
+    """
+    url = url.strip()
+    if spotify.is_spotify_url(url):
+        return _play_spotify(url, normalize, start_index)
+    if is_youtube_playlist_url(url):
+        return _play_youtube_playlist(url, normalize, start_index)
+    if is_youtube_url(url):
+        return _play_youtube(url, normalize)
+    if is_khinsider_url(url):
+        return _play_khinsider(url, normalize, start_index)
+    show_error("Unrecognized URL. Paste a YouTube, Spotify, or KHInsider link.")
+    return "menu"
+
+
+def _resume(entry: dict) -> int:
+    """Resume index for a history entry; a finished collection restarts at 0."""
+    resume = int(entry.get("last_index", 0) or 0)
+    tc = entry.get("track_count")
+    if isinstance(tc, int) and tc > 0 and resume >= tc - 1:
+        resume = 0  # finished -> start over from the top
+    return resume
+
+
 def _recently_played(normalize: bool) -> str:
     """Show the history menu and replay a selection. Returns 'menu'/'quit'."""
     while True:
@@ -206,14 +291,9 @@ def _recently_played(normalize: bool) -> str:
         elif action == "play":
             entry = payload
             show_welcome()
-            if entry.get("type") == "youtube":
-                result = _play_youtube(entry["url"], normalize)
-            else:
-                resume = int(entry.get("last_index", 0) or 0)
-                tc = entry.get("track_count")
-                if isinstance(tc, int) and tc > 0 and resume >= tc - 1:
-                    resume = 0  # finished album -> start over from the top
-                result = _play_khinsider(entry["url"], normalize, start_index=resume)
+            # Re-detect the source from the stored URL (deterministic) and
+            # resume where the user left off for multi-track collections.
+            result = _play_url(entry["url"], normalize, start_index=_resume(entry))
             return "quit" if result == "quit" else "menu"
 
 
@@ -267,22 +347,12 @@ def main():
                 break
             if cmd in ("", "b"):
                 continue  # empty / back -> return to menu
-            if _play_youtube(url, normalize) == "quit":
+            if _play_url(url, normalize) == "quit":
                 break
         elif choice == "2":
-            show_welcome()
-            url = prompt_khinsider_url()
-            cmd = url.strip().lower()
-            if cmd == "q":
-                break
-            if cmd in ("", "b"):
-                continue
-            if _play_khinsider(url, normalize) == "quit":
-                break
-        elif choice == "3":
             if _recently_played(normalize) == "quit":
                 break
-        elif choice == "4":
+        elif choice == "3":
             if _settings_menu() == "quit":
                 break
         elif choice == "h":

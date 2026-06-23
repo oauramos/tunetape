@@ -9,6 +9,8 @@ import tempfile
 import threading
 import time
 
+from tunetape.models import Album, Track
+
 
 def check_dependencies(require_ytdlp: bool = True):
     """Verify mpv (always) and yt-dlp (when required) exist in PATH."""
@@ -26,15 +28,30 @@ _YOUTUBE_RE = re.compile(
 )
 
 
+def is_youtube_url(url: str) -> bool:
+    """True for a single YouTube video URL (not a playlist — see is_youtube_playlist_url)."""
+    return bool(_YOUTUBE_RE.match(url.strip()))
+
+
 def get_stream_info(url: str) -> dict:
     """Extract audio stream URL and title from a YouTube URL."""
     url = url.strip()
     if not _YOUTUBE_RE.match(url):
         raise ValueError("Invalid URL. Please paste a valid youtube.com or youtu.be link.")
+    return resolve_with_ytdlp(url)
 
+
+def resolve_with_ytdlp(arg: str) -> dict:
+    """Resolve a yt-dlp input to a playable audio stream URL + title.
+
+    ``arg`` is anything yt-dlp accepts as input: a YouTube watch URL or a
+    ``ytsearch1:<query>`` search (used to find the YouTube audio for a Spotify
+    track). Shared by the YouTube, YouTube-playlist, and Spotify resolvers so
+    the network/error handling lives in one place.
+    """
     try:
         result = subprocess.run(
-            ["yt-dlp", "-f", "bestaudio", "--get-url", "--get-title", url],
+            ["yt-dlp", "-f", "bestaudio", "--get-url", "--get-title", arg],
             capture_output=True,
             text=True,
             timeout=30,
@@ -64,6 +81,76 @@ def get_stream_info(url: str) -> dict:
     title = lines[0] if lines[0] != stream_url else "Unknown title"
 
     return {"title": title, "stream_url": stream_url}
+
+
+# Matches a YouTube playlist URL — either the dedicated playlist page or a
+# watch URL carrying a `list=` param. Kept separate from _YOUTUBE_RE because the
+# bare `playlist?list=…` form (no v=) is not a single-video URL.
+_YT_PLAYLIST_RE = re.compile(
+    r"^(https?://)?(www\.|music\.|m\.)?youtube\.com/"
+    r"(playlist|watch)\?(\S*&)?list=[\w\-]+"
+)
+
+
+def is_youtube_playlist_url(url: str) -> bool:
+    return bool(_YT_PLAYLIST_RE.match(url.strip()))
+
+
+def _parse_flat_playlist(stdout: str) -> list:
+    """Parse `yt-dlp --flat-playlist --print "%(id)s|%(title)s"` output to Tracks.
+
+    Split on the FIRST `|` only, so a `|` inside a video title is preserved.
+    """
+    tracks = []
+    for line in stdout.strip().split("\n"):
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        vid, title = line.split("|", 1)
+        vid = vid.strip()
+        if not vid:
+            continue
+        tracks.append(Track(
+            name=title.strip() or vid,
+            resolve_hint=f"https://www.youtube.com/watch?v={vid}",
+        ))
+    return tracks
+
+
+def fetch_youtube_playlist(url: str) -> Album:
+    """Enumerate a YouTube playlist (no download) and return an Album of Tracks."""
+    url = url.strip()
+    if not is_youtube_playlist_url(url):
+        raise ValueError("Invalid YouTube playlist URL.")
+
+    try:
+        result = subprocess.run(
+            ["yt-dlp", "--flat-playlist", "--no-warnings",
+             "--print", "%(id)s|%(title)s", url],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        raise ConnectionError("Network error. Check your internet connection and try again.")
+    except OSError:
+        raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip()
+        if "urlopen error" in stderr or "getaddrinfo" in stderr or "timed out" in stderr:
+            raise ConnectionError("Network error. Check your internet connection and try again.")
+        raise RuntimeError(
+            f"Could not load playlist. It may be private or unavailable.\n\nDetails: {stderr}"
+        )
+
+    tracks = _parse_flat_playlist(result.stdout)
+    if not tracks:
+        raise ValueError(
+            "No videos found in the playlist. Double-check the URL.\n\n"
+            f"URL: {url}"
+        )
+    return Album(title="YouTube Playlist", tracks=tracks)
 
 
 class MPVController:

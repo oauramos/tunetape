@@ -27,16 +27,17 @@
 ## How it works
 
 ```
-tunetape → pick a source → paste a URL → music plays in your terminal
+tunetape → paste a URL → music plays in your terminal
 ```
 
-tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard controls — all without leaving the terminal.
+tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard controls — all without leaving the terminal. Pick **Play**, paste any supported URL, and tunetape figures out the source.
 
-**Two sources:**
-- **YouTube** — paste any YouTube URL. Audio extracted via **yt-dlp**.
+**Three sources:**
+- **YouTube** — paste any YouTube video **or playlist** URL. Audio extracted via **yt-dlp**.
+- **Spotify** — paste a Spotify track **or playlist** URL. Spotify audio is DRM-locked, so tunetape reads the public track list (no login) and streams each song's match from YouTube.
 - **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
-**Remembers what you play:** every YouTube title and KHInsider album lands in a **Recently played** menu, so you can jump back in — albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
+**Remembers what you play:** every track, playlist, and album lands in a **Recently played** menu, so you can jump back in — playlists and albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
 
 ---
 
@@ -84,7 +85,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install .
 ```
 
-> **Note:** `yt-dlp` is only required for YouTube. KHInsider works with just `mpv`.
+> **Note:** `yt-dlp` is required for YouTube and Spotify (Spotify songs stream via YouTube). KHInsider works with just `mpv`.
 
 </details>
 
@@ -156,7 +157,7 @@ curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh |
 | `b` | Back to menu |
 | `q` | Quit |
 
-### Playlist Mode (KHInsider)
+### Playlist Mode (Spotify · YouTube playlists · KHInsider)
 
 | Key | Action |
 |:---:|--------|
@@ -204,9 +205,9 @@ This project is free to use, modify, and distribute. See [MIT License](LICENSE) 
 
 ## Disclaimer
 
-**tunetape** does not store, host, download, or redistribute any content from YouTube, KHInsider, or any other third-party service. It is a lightweight terminal-based streaming client that relies on publicly available tools ([mpv](https://mpv.io/), [yt-dlp](https://github.com/yt-dlp/yt-dlp)) to stream audio in real time.
+**tunetape** does not store, host, download, or redistribute any content from YouTube, Spotify, KHInsider, or any other third-party service. It is a lightweight terminal-based streaming client that relies on publicly available tools ([mpv](https://mpv.io/), [yt-dlp](https://github.com/yt-dlp/yt-dlp)) to stream audio in real time. For Spotify, only public metadata (track names and artists) is read to locate the matching audio on YouTube; no Spotify audio is accessed.
 
-All trademarks, service marks, and brand names (including YouTube and KHInsider) are the property of their respective owners. This project is not affiliated with, endorsed by, or sponsored by any of these services.
+All trademarks, service marks, and brand names (including YouTube, Spotify, and KHInsider) are the property of their respective owners. This project is not affiliated with, endorsed by, or sponsored by any of these services.
 
 Users are solely responsible for how they use this tool. Please respect copyright laws and the terms of service of any platform you access through tunetape.
 
