@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tunetape"
-version = "0.5.0"
-description = "Terminal YouTube audio player"
+version = "0.6.0"
+description = "Terminal audio player for YouTube, Spotify, and KHInsider"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"
 authors = [{ name = "oauramos" }]
-keywords = ["terminal", "audio", "player", "youtube", "mpv", "yt-dlp", "tui", "cli", "music"]
+keywords = ["terminal", "audio", "player", "youtube", "spotify", "khinsider", "mpv", "yt-dlp", "tui", "cli", "music"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",

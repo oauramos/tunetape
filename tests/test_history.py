@@ -45,11 +45,36 @@ def test_khinsider_fields(isolated):
     assert entry["last_index"] == 3
 
 
+@pytest.mark.parametrize("etype", ["spotify", "youtube_playlist"])
+def test_collection_fields(isolated, etype):
+    history.record(etype, "c", "Collection", track_count=11, last_index=4)
+    entry = history.load()[0]
+    assert entry["type"] == etype
+    assert entry["track_count"] == 11
+    assert entry["last_index"] == 4
+
+
+def test_youtube_single_has_no_resume_fields(isolated):
+    history.record("youtube", "v", "Video")
+    entry = history.load()[0]
+    assert "track_count" not in entry
+    assert "last_index" not in entry
+
+
 def test_set_last_index_does_not_bump_play_count(isolated):
     history.record("khinsider", "alb", "Album", track_count=5, last_index=0)
     history.set_last_index("alb", 4)
     entry = [e for e in history.load() if e["url"] == "alb"][0]
     assert entry["last_index"] == 4
+    assert entry["play_count"] == 1
+
+
+@pytest.mark.parametrize("etype", ["spotify", "youtube_playlist"])
+def test_set_last_index_collection_types(isolated, etype):
+    history.record(etype, "c", "Collection", track_count=8, last_index=0)
+    history.set_last_index("c", 5)
+    entry = [e for e in history.load() if e["url"] == "c"][0]
+    assert entry["last_index"] == 5
     assert entry["play_count"] == 1
 
 
@@ -76,7 +101,7 @@ def test_clear(isolated):
 
 
 def test_invalid_type_ignored(isolated):
-    history.record("spotify", "z", "Z")
+    history.record("bandcamp", "z", "Z")  # not a supported source type
     assert history.load() == []
 
 

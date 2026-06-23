@@ -1,23 +1,12 @@
 import re
 import urllib.request
 import urllib.parse
-from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Optional
 
-
-@dataclass
-class Track:
-    name: str
-    track_page_url: str
-    direct_url: Optional[str] = None
-
-
-@dataclass
-class Album:
-    title: str
-    tracks: list = field(default_factory=list)
-
+# Track/Album live in a neutral module so other source adapters (spotify, the
+# YouTube-playlist code) don't have to import from khinsider. Re-exported here
+# so existing `from tunetape.khinsider import Track, Album` callers keep working.
+from tunetape.models import Album, Track
 
 _KHINSIDER_RE = re.compile(
     r"^https?://downloads\.khinsider\.com/game-soundtracks/album/.+"
@@ -143,7 +132,7 @@ def fetch_album(url: str) -> Album:
 
     title = parser.title.strip() or "Unknown Album"
     tracks = [
-        Track(name=name, track_page_url=track_url)
+        Track(name=name, resolve_hint=track_url)
         for track_url, name in parser.tracks
     ]
     return Album(title=title, tracks=tracks)
@@ -154,7 +143,7 @@ def resolve_track_url(track: Track) -> str:
     if track.direct_url:
         return track.direct_url
 
-    html = _fetch_page(track.track_page_url)
+    html = _fetch_page(track.resolve_hint)
     parser = _TrackPageParser()
     parser.feed(html)
 

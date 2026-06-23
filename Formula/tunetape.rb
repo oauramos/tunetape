@@ -17,7 +17,7 @@
 class Tunetape < Formula
   include Language::Python::Virtualenv
 
-  desc "Terminal audio player that streams from YouTube and KHInsider"
+  desc "Terminal audio player that streams from YouTube, Spotify, and KHInsider"
   homepage "https://github.com/oauramos/tunetape"
   url "https://github.com/oauramos/tunetape/archive/refs/tags/v0.5.0.tar.gz"
   sha256 "4107b90facdf14e58f0ddb174aa34147096fff0041307f9948f98a78da82b88c"

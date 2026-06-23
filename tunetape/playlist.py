@@ -3,7 +3,7 @@ import json
 import os
 import tempfile
 
-from tunetape.khinsider import Album, Track
+from tunetape.models import Album, Track
 
 
 class Playlist:
@@ -69,7 +69,7 @@ class Playlist:
             "tracks": [
                 {
                     "name": t.name,
-                    "track_page_url": t.track_page_url,
+                    "resolve_hint": t.resolve_hint,
                     "direct_url": t.direct_url,
                 }
                 for t in self._album.tracks
