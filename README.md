@@ -36,7 +36,7 @@ tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard co
 - **YouTube** — paste any YouTube URL. Audio extracted via **yt-dlp**.
 - **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
-**Remembers what you play:** every YouTube title and KHInsider album lands in a **Recently played** menu, so you can jump back in — albums even resume at the track you left off. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
+**Remembers what you play:** every YouTube title and KHInsider album lands in a **Recently played** menu, so you can jump back in — albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
 
 ---
 

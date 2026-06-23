@@ -55,7 +55,9 @@ def _play_youtube(url: str, normalize: bool) -> str:
 
     controller = None
     try:
-        controller = MPVController(info["stream_url"], normalize=normalize)
+        controller = MPVController(
+            info["stream_url"], normalize=normalize, volume=config.get_volume()
+        )
         _active_controller = controller
         debug.log(f"Now playing (YouTube): {info['title']}")
         history.record("youtube", url, info["title"])
@@ -69,6 +71,9 @@ def _play_youtube(url: str, normalize: bool) -> str:
         raise
     finally:
         if controller is not None:
+            # Remember the volume the user left it at before tearing mpv down
+            # (the socket is still live here; after quit() it's gone).
+            config.set_volume(controller.get_volume())
             controller.quit()
         _active_controller = None
 
@@ -96,6 +101,9 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
     )
 
     result = "menu"
+    # Start at the user's last-set volume and carry it across tracks, so a
+    # mid-album adjustment sticks for the rest of the album and the next launch.
+    volume = config.get_volume()
     # A single dead/unreachable track shouldn't abandon the rest of the album:
     # fail forward to the next track, but stop after too many failures in a row.
     consecutive_failures = 0
@@ -116,7 +124,9 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
             if not failed:
                 controller = None
                 try:
-                    controller = MPVController(direct_url, normalize=normalize)
+                    controller = MPVController(
+                        direct_url, normalize=normalize, volume=volume
+                    )
                     _active_controller = controller
                     history.set_last_index(url, playlist.current_index)
                     playlist_info = {
@@ -136,6 +146,10 @@ def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
                         raise
                 finally:
                     if controller is not None:
+                        # Carry the latest volume to the next track and persist
+                        # it (socket is still live before quit()).
+                        volume = controller.get_volume()
+                        config.set_volume(volume)
                         controller.quit()
                     _active_controller = None
 

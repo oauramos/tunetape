@@ -69,7 +69,7 @@ def get_stream_info(url: str) -> dict:
 class MPVController:
     """Controls an mpv instance via IPC socket."""
 
-    def __init__(self, stream_url: str, normalize: bool = False):
+    def __init__(self, stream_url: str, normalize: bool = False, volume: float = None):
         # [#5] Secure socket path: private temp directory instead of predictable /tmp path
         self._sock_dir = tempfile.mkdtemp(prefix="tunetape_")
         self._sock_path = os.path.join(self._sock_dir, "ipc.sock")
@@ -80,17 +80,19 @@ class MPVController:
         self._closed = False  # [#16] Idempotent quit guard
         self._buf = b""  # [#3] Persistent read buffer for IPC
         self._req_id = 0  # Monotonic IPC request id for response matching
-        self._last_volume = 100.0  # last good readings, returned on IPC error
+        # Seed the cached reading with the launch volume so the meter shows the
+        # restored level immediately, before the first IPC poll lands.
+        self._last_volume = 100.0 if volume is None else float(volume)
         self._last_muted = False
 
-        if not self._spawn_and_connect(stream_url, normalize):
+        if not self._spawn_and_connect(stream_url, normalize, volume):
             # The audio filter may be unavailable on a minimal mpv build; retry
             # once without it before giving up so playback isn't blocked.
-            if not (normalize and self._spawn_and_connect(stream_url, False)):
+            if not (normalize and self._spawn_and_connect(stream_url, False, volume)):
                 self._cleanup_socket()
                 raise RuntimeError("Could not connect to the player. Try again.")
 
-    def _spawn_and_connect(self, stream_url: str, normalize: bool) -> bool:
+    def _spawn_and_connect(self, stream_url: str, normalize: bool, volume: float = None) -> bool:
         """Launch mpv and connect to its IPC socket. Returns True on success.
 
         On failure, reaps the spawned process so a retry can start cleanly.
@@ -113,6 +115,9 @@ class MPVController:
             # (no separate ffmpeg binary needed); dynaudnorm is single-pass and
             # real-time friendly, which suits streaming.
             args.append("--af=dynaudnorm")
+        if volume is not None:
+            # Start at the user's last-set level instead of mpv's default 100%.
+            args.append(f"--volume={int(round(float(volume)))}")
         # [#11] Use -- separator so stream_url can't be interpreted as mpv flag
         args += ["--", stream_url]
 
