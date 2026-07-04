@@ -551,34 +551,38 @@ def _mask_key(key: str) -> str:
 
 
 def show_ai_settings() -> str:
-    """Configure AI discovery (key, model, endpoint, auth). Returns 'quit'/'back'."""
-    from tunetape.ai import _DEFAULT_MODEL, _DEFAULT_BASE_URL
-
+    """Configure AI discovery (provider, key, model, endpoint, auth). Returns 'quit'/'back'."""
     while True:
         show_welcome()
+        prov = ai.provider()  # 'anthropic' | 'openai'
+        is_openai = prov == "openai"
+        env_var = "OPENAI_API_KEY" if is_openai else "ANTHROPIC_API_KEY"
         saved_key = config.get_setting("ai_api_key") or ""
-        env_key = os.environ.get("ANTHROPIC_API_KEY", "")
-        model = (config.get_setting("ai_model") or "").strip() or _DEFAULT_MODEL
-        base = (config.get_setting("ai_base_url") or "").strip() or _DEFAULT_BASE_URL
+        env_key = os.environ.get(env_var, "")
+        model = (config.get_setting("ai_model") or "").strip() or ai.default_model()
+        base = (config.get_setting("ai_base_url") or "").strip() or ai.default_base_url()
+        path = "/v1/chat/completions" if is_openai else "/v1/messages"
         is_bearer = ai.auth_mode() == "bearer"
-        auth_label = "Bearer token" if is_bearer else "x-api-key"
-        key_label = "API key / token" if is_bearer else "API key"
 
         console.print(f"  [bold {ACCENT}]AI discovery[/bold {ACCENT}]")
-        console.print("  [dim]Suggests songs from a text request via the Anthropic Messages API"
-                      " (or a compatible gateway).[/dim]")
+        console.print("  [dim]Suggests songs from a text request. Works with Anthropic or any"
+                      " OpenAI-compatible endpoint (including local models).[/dim]")
         console.print()
-        console.print(f"  [bold]1.[/bold] {key_label}: {_mask_key(saved_key)}")
+        console.print(f"  [bold]1.[/bold] Provider: [{ACCENT}]{prov}[/{ACCENT}]")
+        console.print("     [dim]anthropic (Messages API) or openai (/v1/chat/completions — OpenAI, Ollama, …).[/dim]")
+        console.print(f"  [bold]2.[/bold] API key: {_mask_key(saved_key)}")
         if not saved_key and env_key:
-            console.print("     [dim]Using ANTHROPIC_API_KEY from your environment.[/dim]")
+            console.print(f"     [dim]Using {env_var} from your environment.[/dim]")
         else:
-            console.print("     [dim]Get one at console.anthropic.com — stored locally in config.[/dim]")
-        console.print(f"  [bold]2.[/bold] Model: [{ACCENT}]{escape(model)}[/{ACCENT}]")
-        console.print("     [dim]Any Claude model id; blank resets to the default.[/dim]")
-        console.print(f"  [bold]3.[/bold] Endpoint: [{ACCENT}]{escape(base)}[/{ACCENT}]")
-        console.print("     [dim]Anthropic-compatible base URL — point at a gateway/proxy; blank resets.[/dim]")
-        console.print(f"  [bold]4.[/bold] Auth: [{ACCENT}]{escape(auth_label)}[/{ACCENT}]")
-        console.print("     [dim]How the key is sent — x-api-key (Anthropic) or Bearer (proxies/OAuth).[/dim]")
+            console.print(f"     [dim]Or set {env_var} — stored locally in config.[/dim]")
+        console.print(f"  [bold]3.[/bold] Model: [{ACCENT}]{escape(model)}[/{ACCENT}]")
+        console.print("     [dim]Any model id for the provider; blank resets to the default.[/dim]")
+        console.print(f"  [bold]4.[/bold] Endpoint: [{ACCENT}]{escape(base)}[/{ACCENT}]")
+        console.print(f"     [dim]Base URL — point at a gateway/proxy or local server; blank resets. POSTs to <base>{path}.[/dim]")
+        if not is_openai:
+            auth_label = "Bearer token" if is_bearer else "x-api-key"
+            console.print(f"  [bold]5.[/bold] Auth: [{ACCENT}]{escape(auth_label)}[/{ACCENT}]")
+            console.print("     [dim]How the key is sent — x-api-key (Anthropic) or Bearer (proxies/OAuth).[/dim]")
         if saved_key:
             console.print("  [bold]c.[/bold] Clear saved key")
         if ai.is_configured():
@@ -596,32 +600,35 @@ def show_ai_settings() -> str:
         if choice in ("b", ""):
             return "back"
         if choice == "1":
+            # Two providers — flip between them.
+            config.set_setting("ai_provider", "anthropic" if is_openai else "openai")
+        elif choice == "2":
             console.print()
-            console.print(f"  [dim]Paste your {key_label.lower()} (blank to keep current):[/dim]")
+            console.print("  [dim]Paste your API key (blank to keep current):[/dim]")
             try:
                 entered = input("  > ").strip()
             except (EOFError, KeyboardInterrupt):
                 entered = ""
             if entered:
                 config.set_setting("ai_api_key", entered)
-        elif choice == "2":
+        elif choice == "3":
             console.print()
-            console.print(f"  [dim]Model id (blank for default {escape(_DEFAULT_MODEL)}):[/dim]")
+            console.print(f"  [dim]Model id (blank for default {escape(ai.default_model())}):[/dim]")
             try:
                 entered = input("  > ").strip()
             except (EOFError, KeyboardInterrupt):
                 entered = ""
             config.set_setting("ai_model", entered)
-        elif choice == "3":
+        elif choice == "4":
             console.print()
-            console.print(f"  [dim]Base URL (blank for default {escape(_DEFAULT_BASE_URL)}):[/dim]")
-            console.print("  [dim]tunetape POSTs to <base>/v1/messages.[/dim]")
+            console.print(f"  [dim]Base URL (blank for default {escape(ai.default_base_url())}):[/dim]")
+            console.print(f"  [dim]tunetape POSTs to <base>{path}.[/dim]")
             try:
                 entered = input("  > ").strip()
             except (EOFError, KeyboardInterrupt):
                 entered = ""
             config.set_setting("ai_base_url", entered)
-        elif choice == "4":
+        elif choice == "5" and not is_openai:
             # Two modes only — flip between them.
             config.set_setting("ai_auth_mode", "x-api-key" if is_bearer else "bearer")
         elif choice == "c" and saved_key:

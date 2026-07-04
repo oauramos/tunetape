@@ -24,11 +24,14 @@ _DEFAULTS = {
     # AI discovery (Settings → AI discovery). Empty key keeps the feature off;
     # ANTHROPIC_API_KEY is used as a fallback when this is blank.
     "ai_api_key": "",
-    "ai_model": "",  # blank -> ai._DEFAULT_MODEL
-    # Endpoint + auth, so the same feature can target an Anthropic-compatible
-    # gateway/proxy instead of the official API.
-    "ai_base_url": "",   # blank -> ai._DEFAULT_BASE_URL
-    "ai_auth_mode": "",  # blank -> "x-api-key"; or "bearer"
+    # Provider dialect: blank/"anthropic" -> Anthropic Messages; "openai" ->
+    # any OpenAI-compatible /v1/chat/completions endpoint (incl. local models).
+    "ai_provider": "",
+    "ai_model": "",  # blank -> the provider's default model
+    # Endpoint + auth, so the same feature can target a compatible gateway/proxy
+    # or a local server instead of the official API.
+    "ai_base_url": "",   # blank -> the provider's default base URL
+    "ai_auth_mode": "",  # blank -> "x-api-key"; or "bearer" (Anthropic only)
 }
 
 
