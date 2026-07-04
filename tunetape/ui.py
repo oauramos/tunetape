@@ -199,6 +199,39 @@ def main_menu_loop() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
+def read_key() -> str:
+    """Block for a single keypress and return it lowercased (no Enter needed).
+
+    Enter returns "" and Ctrl-C/Ctrl-D return "q" so callers can treat them as
+    back/quit; escape sequences (arrow keys) are swallowed and return "". Falls
+    back to a line read when stdin isn't a TTY (piped input / tests). For menus
+    whose choices are all single keys — no free text to type.
+    """
+    if not sys.stdin.isatty():
+        try:
+            return input().strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            return "q"
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+        if ch == "\x1b":
+            # Drain the rest of an escape sequence so its trailing bytes aren't
+            # read as separate keypresses.
+            while select.select([sys.stdin], [], [], 0.001)[0]:
+                os.read(fd, 1)
+            return ""
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+        return "q"
+    if ch in ("\r", "\n"):
+        return ""
+    return ch.lower()
+
+
 def prompt_url() -> str:
     """Prompt user for a media URL (YouTube / Spotify / KHInsider, auto-detected)."""
     console.print("  Paste a YouTube, Spotify, or KHInsider URL:")
@@ -497,16 +530,16 @@ def show_settings(normalize_on: bool) -> str:
     console.print("     [dim]Describe a vibe and let an AI find songs for you.[/dim]")
     console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
     console.print()
+    console.print("  [dim]› press a key[/dim]")
     while True:
-        try:
-            choice = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
+        choice = read_key()  # single keypress — every option here is one key
+        if choice == "q":
+            return "q"
+        if choice in ("b", ""):  # b or Enter/Esc -> back
             return "b"
-        if choice == "":
-            return "b"
-        if choice in ("1", "2", "3", "b", "q"):
+        if choice in ("1", "2", "3"):
             return choice
-        console.print("  [dim]Invalid selection. Try again.[/dim]")
+        # Ignore stray keys and keep waiting, like the main menu.
 
 
 def _mask_key(key: str) -> str:
