@@ -122,16 +122,28 @@ curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh |
   <img src="assets/menu.svg" alt="tunetape menu" width="600">
 </p>
 
-### YouTube Player
+### Player
+
+Paste any supported URL — the source is auto-detected.
 
 <p align="center">
-  <img src="assets/player.svg" alt="tunetape youtube player" width="600">
+  <img src="assets/player.svg" alt="tunetape player" width="600">
 </p>
 
-### KHInsider Playlist
+### Playlist Player
+
+Spotify playlists, YouTube playlists, and KHInsider albums get next/prev track controls.
 
 <p align="center">
   <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
+</p>
+
+### Recently Played
+
+Everything you play is remembered — playlists and albums resume where you left off.
+
+<p align="center">
+  <img src="assets/history.svg" alt="tunetape recently played" width="600">
 </p>
 
 ### Discover (AI)
