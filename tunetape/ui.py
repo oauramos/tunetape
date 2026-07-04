@@ -18,7 +18,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from tunetape import __version__, art, config, debug, paths
+from tunetape import __version__, ai, art, config, debug, paths
 from tunetape.art import ACCENT, ACCENT2
 
 
@@ -102,7 +102,8 @@ def button_row(items) -> Columns:
 _MENU_ROW1 = [
     ("1", "Play"),
     ("2", "History"),
-    ("3", "Settings"),
+    ("3", "Discover"),
+    ("4", "Settings"),
 ]
 _MENU_ROW2 = [
     ("h", "Help"),
@@ -198,6 +199,39 @@ def main_menu_loop() -> str:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
+def read_key() -> str:
+    """Block for a single keypress and return it lowercased (no Enter needed).
+
+    Enter returns "" and Ctrl-C/Ctrl-D return "q" so callers can treat them as
+    back/quit; escape sequences (arrow keys) are swallowed and return "". Falls
+    back to a line read when stdin isn't a TTY (piped input / tests). For menus
+    whose choices are all single keys — no free text to type.
+    """
+    if not sys.stdin.isatty():
+        try:
+            return input().strip().lower()[:1]
+        except (EOFError, KeyboardInterrupt):
+            return "q"
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+        if ch == "\x1b":
+            # Drain the rest of an escape sequence so its trailing bytes aren't
+            # read as separate keypresses.
+            while select.select([sys.stdin], [], [], 0.001)[0]:
+                os.read(fd, 1)
+            return ""
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+        return "q"
+    if ch in ("\r", "\n"):
+        return ""
+    return ch.lower()
+
+
 def prompt_url() -> str:
     """Prompt user for a media URL (YouTube / Spotify / KHInsider, auto-detected)."""
     console.print("  Paste a YouTube, Spotify, or KHInsider URL:")
@@ -209,6 +243,53 @@ def prompt_url() -> str:
     except (EOFError, KeyboardInterrupt):
         return ""
     return url.strip()
+
+
+def prompt_discover() -> str:
+    """Prompt for a free-text music request to hand to the AI. '' cancels."""
+    console.print(f"  [bold {ACCENT}]Discover[/bold {ACCENT}] [dim]· describe what you want to hear[/dim]")
+    console.print("  [dim]e.g. \"upbeat 80s synthwave\" · \"calm piano for focus\" · \"90s hip hop classics\"[/dim]")
+    console.print("  [dim]enter to ask  ·  b back  ·  q quit[/dim]")
+    console.print()
+    try:
+        text = input("  > ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return text.strip()
+
+
+def show_ai_results(request: str, tracks: list) -> tuple:
+    """List AI-suggested tracks and let the user pick one to play.
+
+    Returns an (action, payload) tuple where action is 'play' (payload is the
+    chosen Track), 'back', or 'quit'.
+    """
+    console.print()
+    console.print(f"  [bold {ACCENT}]Suggestions[/bold {ACCENT}] [dim]for “{escape(request)}”[/dim]")
+    console.print()
+    for i, t in enumerate(tracks, 1):
+        console.print(f"  [bold]{i:>2}.[/bold] {escape(t.name)}")
+    console.print()
+    console.print(
+        "  [dim]number to play  ·  r new request  ·  b back  ·  q quit[/dim]"
+    )
+    console.print()
+    while True:
+        try:
+            raw = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return ("back", None)
+        if raw == "q":
+            return ("quit", None)
+        if raw in ("b", ""):
+            return ("back", None)
+        if raw == "r":
+            return ("research", None)
+        if raw.isdigit():
+            idx = int(raw) - 1
+            if 0 <= idx < len(tracks):
+                return ("play", tracks[idx])
+        console.print("  [dim]Invalid selection. Try again.[/dim]")
 
 
 def with_spinner(message: str, func, *args, **kwargs):
@@ -239,6 +320,103 @@ def show_error(message: str):
         input()
     except (EOFError, KeyboardInterrupt):
         pass
+
+
+def show_ai_unavailable(message: str) -> str:
+    """Explain why AI discovery can't run and offer a jump to its settings.
+
+    Shown when the Discover screen's pre-flight check fails, so the user finds
+    out before typing a request. Returns 's' (open AI settings), 'back', or
+    'quit'.
+    """
+    debug.log(message, "ERROR")
+    console.print()
+    console.print(Panel(
+        f"[yellow]{escape(message)}[/yellow]",
+        title=f"[bold {ACCENT}]AI discovery unavailable[/]",
+        border_style="yellow",
+        padding=(1, 2),
+    ))
+    console.print()
+    console.print("  [dim]s open AI settings  ·  b back  ·  q quit[/dim]")
+    console.print()
+    try:
+        raw = input("  > ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return "back"
+    if raw == "q":
+        return "quit"
+    if raw == "s":
+        return "s"
+    return "back"
+
+
+# Braille spinner + trailing-dot cycle for the verification screen.
+_VERIFY_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+_VERIFY_DOTS = ("   ", ".  ", ".. ", "...")
+
+
+def _verify_renderable(frame: int):
+    """A frame of the 'verifying AI connection' animation (cassette + spinner)."""
+    glyph = _VERIFY_SPINNER[frame % len(_VERIFY_SPINNER)]
+    dots = _VERIFY_DOTS[(frame // 3) % len(_VERIFY_DOTS)]
+    return Group(
+        art.render_welcome(frame),
+        Text(""),
+        Text.from_markup(f"  [{ACCENT}]{glyph}[/] Verifying AI connection{dots}"),
+        Text.from_markup("  [dim]reaching the model endpoint…[/dim]"),
+    )
+
+
+def _verify_result_renderable(ok: bool, detail: str):
+    """The final held frame: a green ✓ (with the model) or a yellow ✗ (reason)."""
+    if ok:
+        status = Text.from_markup(
+            f"  [green]✓ Connected[/green] [dim]· {escape(detail)} responded.[/dim]"
+        )
+    else:
+        status = Text.from_markup(f"  [yellow]✗ {escape(detail)}[/yellow]")
+    return Group(art.render_welcome(0), Text(""), status)
+
+
+def verify_ai_connection(check=None) -> tuple:
+    """Run the AI connection check behind an animated screen. Returns (ok, detail).
+
+    ``check`` (default ai.check_connection) runs on a background thread while the
+    cassette animates, so the unavoidable network round-trip reads as a step
+    rather than a freeze. ``detail`` is the model id on success or a user-facing
+    error message on failure. Shared by the Discover pre-flight and
+    Settings → Test connection. Falls back to a plain blocking call when stdout
+    isn't a TTY.
+    """
+    check = check or ai.check_connection
+    box_ = {}
+
+    def _run():
+        try:
+            box_["result"] = (True, check())
+        except (RuntimeError, ConnectionError) as e:
+            box_["result"] = (False, str(e))
+        except Exception as e:  # never let a surprise hang the animation
+            box_["result"] = (False, str(e) or "Unexpected error during verification.")
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+
+    if not sys.stdout.isatty():
+        worker.join()
+        return box_["result"]
+
+    frame = 0
+    with Live(console=console, refresh_per_second=15, screen=True) as live:
+        while worker.is_alive():
+            live.update(_verify_renderable(frame))
+            worker.join(timeout=1 / 15)  # animate at ~15fps until the check returns
+            frame += 1
+        ok, detail = box_["result"]
+        live.update(_verify_result_renderable(ok, detail))
+        time.sleep(0.9)  # hold the ✓/✗ long enough to read before moving on
+    return box_["result"]
 
 
 def _humanize_time(iso_str) -> str:
@@ -274,6 +452,8 @@ _HISTORY_TAGS = {
     "youtube_playlist": "PL",
     "spotify": "SP",
     "khinsider": "KH",
+    "ai": "AI",
+    "ai_search": "AI",
 }
 
 
@@ -296,7 +476,10 @@ def show_history(entries: list) -> tuple:
         when = _humanize_time(e.get("last_played"))
         extra = ""
         tc = e.get("track_count")
-        if isinstance(tc, int) and tc > 1:
+        if e.get("type") == "ai_search":
+            # A re-runnable Discover request, not a single track.
+            extra = " [dim]· search[/dim]"
+        elif isinstance(tc, int) and tc > 1:
             li = int(e.get("last_index", 0) or 0)
             extra = f" [dim]· resume {li + 1}/{tc}[/dim]"
         console.print(
@@ -333,7 +516,7 @@ def show_history(entries: list) -> tuple:
 
 
 def show_settings(normalize_on: bool) -> str:
-    """Render the settings screen and return a choice ('1'/'2'/'b'/'q')."""
+    """Render the settings screen and return a choice ('1'/'2'/'3'/'b'/'q')."""
     console.print()
     console.print(f"  [bold {ACCENT}]Settings[/bold {ACCENT}]")
     console.print()
@@ -342,18 +525,127 @@ def show_settings(normalize_on: bool) -> str:
     console.print("     [dim]Evens out loudness across tracks and sources.[/dim]")
     console.print(f"  [bold]2.[/bold] Accent color: [{ACCENT}]{ACCENT}[/{ACCENT}]")
     console.print("     [dim]Recolor the whole interface — pick your vibe.[/dim]")
+    ai_state = "[green]configured[/green]" if ai.is_configured() else "[dim]not set[/dim]"
+    console.print(f"  [bold]3.[/bold] AI discovery: {ai_state}")
+    console.print("     [dim]Describe a vibe and let an AI find songs for you.[/dim]")
     console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
     console.print()
+    console.print("  [dim]› press a key[/dim]")
     while True:
+        choice = read_key()  # single keypress — every option here is one key
+        if choice == "q":
+            return "q"
+        if choice in ("b", ""):  # b or Enter/Esc -> back
+            return "b"
+        if choice in ("1", "2", "3"):
+            return choice
+        # Ignore stray keys and keep waiting, like the main menu.
+
+
+def _mask_key(key: str) -> str:
+    """Show only the tail of an API key so the screen never leaks the whole thing."""
+    if not key:
+        return "[dim]not set[/dim]"
+    tail = key[-4:] if len(key) >= 4 else key
+    return f"[green]set[/green] [dim]···{escape(tail)}[/dim]"
+
+
+def show_ai_settings() -> str:
+    """Configure AI discovery (provider, key, model, endpoint, auth). Returns 'quit'/'back'."""
+    while True:
+        show_welcome()
+        prov = ai.provider()  # 'anthropic' | 'openai'
+        is_openai = prov == "openai"
+        env_var = "OPENAI_API_KEY" if is_openai else "ANTHROPIC_API_KEY"
+        saved_key = config.get_setting("ai_api_key") or ""
+        env_key = os.environ.get(env_var, "")
+        model = (config.get_setting("ai_model") or "").strip() or ai.default_model()
+        base = (config.get_setting("ai_base_url") or "").strip() or ai.default_base_url()
+        path = "/v1/chat/completions" if is_openai else "/v1/messages"
+        is_bearer = ai.auth_mode() == "bearer"
+
+        console.print(f"  [bold {ACCENT}]AI discovery[/bold {ACCENT}]")
+        console.print("  [dim]Suggests songs from a text request. Works with Anthropic or any"
+                      " OpenAI-compatible endpoint (including local models).[/dim]")
+        console.print()
+        console.print(f"  [bold]1.[/bold] Provider: [{ACCENT}]{prov}[/{ACCENT}]")
+        console.print("     [dim]anthropic (Messages API) or openai (/v1/chat/completions — OpenAI, Ollama, …).[/dim]")
+        console.print(f"  [bold]2.[/bold] API key: {_mask_key(saved_key)}")
+        if not saved_key and env_key:
+            console.print(f"     [dim]Using {env_var} from your environment.[/dim]")
+        else:
+            console.print(f"     [dim]Or set {env_var} — stored locally in config.[/dim]")
+        console.print(f"  [bold]3.[/bold] Model: [{ACCENT}]{escape(model)}[/{ACCENT}]")
+        console.print("     [dim]Any model id for the provider; blank resets to the default.[/dim]")
+        console.print(f"  [bold]4.[/bold] Endpoint: [{ACCENT}]{escape(base)}[/{ACCENT}]")
+        console.print(f"     [dim]Base URL — point at a gateway/proxy or local server; blank resets. POSTs to <base>{path}.[/dim]")
+        if not is_openai:
+            auth_label = "Bearer token" if is_bearer else "x-api-key"
+            console.print(f"  [bold]5.[/bold] Auth: [{ACCENT}]{escape(auth_label)}[/{ACCENT}]")
+            console.print("     [dim]How the key is sent — x-api-key (Anthropic) or Bearer (proxies/OAuth).[/dim]")
+        if saved_key:
+            console.print("  [bold]c.[/bold] Clear saved key")
+        if ai.is_configured():
+            console.print("  [bold]t.[/bold] Test connection")
+            console.print("     [dim]Send a tiny request to confirm the key + model + endpoint work.[/dim]")
+        console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
+        console.print()
         try:
             choice = input("  > ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            return "b"
-        if choice == "":
-            return "b"
-        if choice in ("1", "2", "b", "q"):
-            return choice
-        console.print("  [dim]Invalid selection. Try again.[/dim]")
+            return "back"
+
+        if choice == "q":
+            return "quit"
+        if choice in ("b", ""):
+            return "back"
+        if choice == "1":
+            # Two providers — flip between them.
+            config.set_setting("ai_provider", "anthropic" if is_openai else "openai")
+        elif choice == "2":
+            console.print()
+            console.print("  [dim]Paste your API key (blank to keep current):[/dim]")
+            try:
+                entered = input("  > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                entered = ""
+            if entered:
+                config.set_setting("ai_api_key", entered)
+        elif choice == "3":
+            console.print()
+            console.print(f"  [dim]Model id (blank for default {escape(ai.default_model())}):[/dim]")
+            try:
+                entered = input("  > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                entered = ""
+            config.set_setting("ai_model", entered)
+        elif choice == "4":
+            console.print()
+            console.print(f"  [dim]Base URL (blank for default {escape(ai.default_base_url())}):[/dim]")
+            console.print(f"  [dim]tunetape POSTs to <base>{path}.[/dim]")
+            try:
+                entered = input("  > ").strip()
+            except (EOFError, KeyboardInterrupt):
+                entered = ""
+            config.set_setting("ai_base_url", entered)
+        elif choice == "5" and not is_openai:
+            # Two modes only — flip between them.
+            config.set_setting("ai_auth_mode", "x-api-key" if is_bearer else "bearer")
+        elif choice == "c" and saved_key:
+            config.set_setting("ai_api_key", "")
+        elif choice == "t" and ai.is_configured():
+            ok, detail = verify_ai_connection()
+            show_welcome()
+            if ok:
+                console.print(f"  [green]✓ Connected[/green] [dim]· {escape(detail)} responded.[/dim]")
+            else:
+                console.print(f"  [red]✗ {escape(detail)}[/red]")
+            console.print()
+            console.print("  [dim]Press Enter to continue…[/dim]")
+            try:
+                input()
+            except (EOFError, KeyboardInterrupt):
+                pass
 
 
 def show_color_picker():
@@ -393,7 +685,9 @@ def _commands_table() -> Table:
     rows = [
         (f"[{ACCENT2}]Menu[/]", ""),
         ("1", "Play a URL — YouTube / Spotify / KHInsider"),
-        ("2 / 3", "Recently played / Settings"),
+        ("2", "Recently played"),
+        ("3", "Discover — describe a vibe, AI finds songs"),
+        ("4", "Settings"),
         ("d", "Debug / Logs"),
         ("", ""),
         (f"[{ACCENT2}]Player[/]", ""),

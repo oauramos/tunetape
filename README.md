@@ -37,6 +37,8 @@ tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard co
 - **Spotify** — paste a Spotify track **or playlist** URL. Spotify audio is DRM-locked, so tunetape reads the public track list (no login) and streams each song's match from YouTube.
 - **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
+**Discover (AI):** don't have a link in mind? Pick **Discover**, describe a vibe — *"upbeat 80s synthwave"*, *"calm piano for focus"* — and an AI suggests real songs you can pick from and play (streamed via YouTube). Bring your own [Anthropic API key](https://console.anthropic.com) (set it in **Settings → AI discovery**, or via the `ANTHROPIC_API_KEY` environment variable); the feature stays off until a key is provided.
+
 **Remembers what you play:** every track, playlist, and album lands in a **Recently played** menu, so you can jump back in — playlists and albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
 
 ---
@@ -132,6 +134,22 @@ curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh |
   <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
 </p>
 
+### Discover (AI)
+
+Describe a vibe and pick from AI-suggested songs — each plays via YouTube.
+
+<p align="center">
+  <img src="assets/discover.svg" alt="tunetape AI discovery suggestions" width="600">
+</p>
+
+### AI Discovery Settings
+
+Bring your own key; point it at Anthropic or any compatible gateway.
+
+<p align="center">
+  <img src="assets/ai-settings.svg" alt="tunetape AI discovery settings" width="600">
+</p>
+
 ### Error Handling
 
 <p align="center">
@@ -175,7 +193,23 @@ Open it from the main menu to re-listen to anything you've played before (albums
 | number | Play that entry |
 | `d <n>` | Delete entry *n* |
 | `c` | Clear all history |
-| `q` | Back |
+| `b` | Back |
+| `q` | Quit |
+
+> AI entries replay two ways: a played song re-plays that track, while a saved request (`· search`) re-runs discovery for a fresh list.
+
+### Discover (AI)
+
+Pick **Discover** from the main menu, type a request, then choose a suggestion:
+
+| Key | Action |
+|:---:|--------|
+| number | Play that suggestion |
+| `r` | New request |
+| `b` | Back |
+| `q` | Quit |
+
+> Requires an [Anthropic API key](https://console.anthropic.com) — set it in **Settings → AI discovery** or via `ANTHROPIC_API_KEY`. You can also point it at any Anthropic-compatible gateway (custom endpoint + x-api-key or Bearer auth) from the same screen.
 
 ---
 

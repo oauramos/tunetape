@@ -21,6 +21,17 @@ _DEFAULTS = {
     "accent_color": "cyan",
     # Last playback volume (percent), restored on the next launch.
     "volume": 100,
+    # AI discovery (Settings → AI discovery). Empty key keeps the feature off;
+    # ANTHROPIC_API_KEY is used as a fallback when this is blank.
+    "ai_api_key": "",
+    # Provider dialect: blank/"anthropic" -> Anthropic Messages; "openai" ->
+    # any OpenAI-compatible /v1/chat/completions endpoint (incl. local models).
+    "ai_provider": "",
+    "ai_model": "",  # blank -> the provider's default model
+    # Endpoint + auth, so the same feature can target a compatible gateway/proxy
+    # or a local server instead of the official API.
+    "ai_base_url": "",   # blank -> the provider's default base URL
+    "ai_auth_mode": "",  # blank -> "x-api-key"; or "bearer" (Anthropic only)
 }
 
 
