@@ -37,6 +37,8 @@ tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard co
 - **Spotify** — paste a Spotify track **or playlist** URL. Spotify audio is DRM-locked, so tunetape reads the public track list (no login) and streams each song's match from YouTube.
 - **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
 
+**Discover (AI):** don't have a link in mind? Pick **Discover**, describe a vibe — *"upbeat 80s synthwave"*, *"calm piano for focus"* — and an AI suggests real songs you can pick from and play (streamed via YouTube). Bring your own [Anthropic API key](https://console.anthropic.com) (set it in **Settings → AI discovery**, or via the `ANTHROPIC_API_KEY` environment variable); the feature stays off until a key is provided.
+
 **Remembers what you play:** every track, playlist, and album lands in a **Recently played** menu, so you can jump back in — playlists and albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
 
 ---

@@ -21,6 +21,14 @@ _DEFAULTS = {
     "accent_color": "cyan",
     # Last playback volume (percent), restored on the next launch.
     "volume": 100,
+    # AI discovery (Settings → AI discovery). Empty key keeps the feature off;
+    # ANTHROPIC_API_KEY is used as a fallback when this is blank.
+    "ai_api_key": "",
+    "ai_model": "",  # blank -> ai._DEFAULT_MODEL
+    # Endpoint + auth, so the same feature can target an Anthropic-compatible
+    # gateway/proxy instead of the official API.
+    "ai_base_url": "",   # blank -> ai._DEFAULT_BASE_URL
+    "ai_auth_mode": "",  # blank -> "x-api-key"; or "bearer"
 }
 
 
