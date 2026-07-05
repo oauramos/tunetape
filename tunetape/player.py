@@ -1,23 +1,32 @@
 import atexit
 import json
-import os
 import re
 import shutil
-import socket
 import subprocess
-import tempfile
 import threading
 import time
 
+from tunetape.ipc import create_ipc
 from tunetape.models import Album, Track
+
+
+def _install_hint(pkg: str) -> str:
+    """Platform-appropriate one-liner for installing a missing dependency."""
+    import sys
+
+    if sys.platform == "win32":
+        return f"Install it with: winget install {pkg}  (or: scoop install {pkg})"
+    if sys.platform == "darwin":
+        return f"Install it with: brew install {pkg}"
+    return f"Install it with your package manager, e.g. sudo apt install {pkg}"
 
 
 def check_dependencies(require_ytdlp: bool = True):
     """Verify mpv (always) and yt-dlp (when required) exist in PATH."""
     if not shutil.which("mpv"):
-        raise RuntimeError("mpv is not installed. Install it with: brew install mpv")
+        raise RuntimeError(f"mpv is not installed. {_install_hint('mpv')}")
     if require_ytdlp and not shutil.which("yt-dlp"):
-        raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
+        raise RuntimeError(f"yt-dlp is not installed. {_install_hint('yt-dlp')}")
 
 
 # [#9] Broadened regex: supports youtube.com, youtu.be, music/m subdomains, /live/, /embed/, /shorts/
@@ -59,7 +68,7 @@ def resolve_with_ytdlp(arg: str) -> dict:
     except subprocess.TimeoutExpired:
         raise ConnectionError("Network error. Check your internet connection and try again.")
     except OSError:
-        raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
+        raise RuntimeError(f"yt-dlp is not installed. {_install_hint('yt-dlp')}")
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
@@ -134,7 +143,7 @@ def fetch_youtube_playlist(url: str) -> Album:
     except subprocess.TimeoutExpired:
         raise ConnectionError("Network error. Check your internet connection and try again.")
     except OSError:
-        raise RuntimeError("yt-dlp is not installed. Install it with: brew install yt-dlp")
+        raise RuntimeError(f"yt-dlp is not installed. {_install_hint('yt-dlp')}")
 
     if result.returncode != 0:
         stderr = result.stderr.strip()
@@ -157,12 +166,11 @@ class MPVController:
     """Controls an mpv instance via IPC socket."""
 
     def __init__(self, stream_url: str, normalize: bool = False, volume: float = None):
-        # [#5] Secure socket path: private temp directory instead of predictable /tmp path
-        self._sock_dir = tempfile.mkdtemp(prefix="tunetape_")
-        self._sock_path = os.path.join(self._sock_dir, "ipc.sock")
+        # [#5] IPC endpoint (Unix socket in a private temp dir, or a named pipe on
+        # Windows) — platform detail lives in tunetape.ipc.
+        self._ipc = create_ipc()
         # [#2] Use RLock to prevent deadlock when signal handler calls quit() while lock is held
         self._lock = threading.RLock()
-        self._sock = None
         self._proc = None
         self._closed = False  # [#16] Idempotent quit guard
         self._buf = b""  # [#3] Persistent read buffer for IPC
@@ -176,7 +184,7 @@ class MPVController:
             # The audio filter may be unavailable on a minimal mpv build; retry
             # once without it before giving up so playback isn't blocked.
             if not (normalize and self._spawn_and_connect(stream_url, False, volume)):
-                self._cleanup_socket()
+                self._ipc.cleanup()
                 raise RuntimeError("Could not connect to the player. Try again.")
 
     def _spawn_and_connect(self, stream_url: str, normalize: bool, volume: float = None) -> bool:
@@ -184,18 +192,14 @@ class MPVController:
 
         On failure, reaps the spawned process so a retry can start cleanly.
         """
-        # Start from a clean socket path (a prior failed attempt may have left one).
-        try:
-            if os.path.exists(self._sock_path):
-                os.unlink(self._sock_path)
-        except OSError:
-            pass
+        # Start from a clean endpoint (a prior failed attempt may have left one).
+        self._ipc.reset()
 
         args = [
             "mpv",
             "--no-video",
             "--no-terminal",
-            f"--input-ipc-server={self._sock_path}",
+            f"--input-ipc-server={self._ipc.server_address}",
         ]
         if normalize:
             # Even out loudness across sources. Uses mpv's built-in libavfilter
@@ -218,22 +222,9 @@ class MPVController:
         # and unregisters itself, so this never accumulates or double-reaps.
         atexit.register(self.quit)
 
-        # Wait for socket to appear
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            if os.path.exists(self._sock_path):
-                sock = None
-                try:
-                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    sock.connect(self._sock_path)
-                    sock.settimeout(2.0)
-                    self._sock = sock
-                    return True
-                except (ConnectionRefusedError, FileNotFoundError):
-                    # [#1] Close socket on failed connect to prevent FD leak
-                    if sock is not None:
-                        sock.close()
-            time.sleep(0.1)
+        # Wait (up to 5s) for mpv to create its IPC endpoint, then connect.
+        if self._ipc.connect(5.0):
+            return True
 
         # [#10] Reap zombie on this attempt's failure
         self._proc.terminate()
@@ -245,18 +236,6 @@ class MPVController:
         atexit.unregister(self.quit)
         return False
 
-    def _cleanup_socket(self):
-        try:
-            if os.path.exists(self._sock_path):
-                os.unlink(self._sock_path)
-        except OSError:
-            pass
-        try:
-            if os.path.exists(self._sock_dir):
-                os.rmdir(self._sock_dir)
-        except OSError:
-            pass
-
     def _send(self, command: list) -> dict:
         with self._lock:
             if self._closed:
@@ -267,7 +246,7 @@ class MPVController:
                 self._req_id += 1
                 request_id = self._req_id
                 msg = json.dumps({"command": command, "request_id": request_id}) + "\n"
-                self._sock.sendall(msg.encode())
+                self._ipc.send(msg.encode())
 
                 # [#4] Overall deadline for response (5s)
                 send_deadline = time.monotonic() + 5.0
@@ -289,7 +268,7 @@ class MPVController:
                         self._buf = b""
                         return {"error": "response too large"}
 
-                    chunk = self._sock.recv(4096)
+                    chunk = self._ipc.recv(4096)
                     if not chunk:
                         return {"error": "connection closed"}
                     self._buf += chunk
@@ -357,9 +336,9 @@ class MPVController:
             self._closed = True
 
         try:
-            if self._sock:
+            if self._ipc.connected:
                 msg = json.dumps({"command": ["quit"]}) + "\n"
-                self._sock.sendall(msg.encode())
+                self._ipc.send(msg.encode())
         except Exception:
             pass
         try:
@@ -373,11 +352,10 @@ class MPVController:
             except Exception:
                 pass
         try:
-            if self._sock:
-                self._sock.close()
+            self._ipc.close()
         except Exception:
             pass
-        self._cleanup_socket()
+        self._ipc.cleanup()
         try:
             atexit.unregister(self.quit)
         except Exception:

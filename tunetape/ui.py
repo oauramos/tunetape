@@ -1,11 +1,8 @@
 import os
-import select
 import shutil
 import sys
-import termios
 import threading
 import time
-import tty
 from datetime import datetime, timezone
 
 from rich import box
@@ -18,8 +15,10 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from tunetape import __version__, ai, art, config, debug, paths
+from tunetape import __version__, ai, art, config, debug, keyboard, paths
 from tunetape.art import ACCENT, ACCENT2
+# Re-exported so callers (e.g. __main__) keep importing them from tunetape.ui.
+from tunetape.keyboard import restore_terminal_state, save_terminal_state  # noqa: F401
 
 
 def set_accent(color: str) -> None:
@@ -36,34 +35,6 @@ def set_accent(color: str) -> None:
     art.ACCENT = color
 
 console = Console()
-
-# Module-level terminal state for atexit restoration
-_saved_terminal_settings = None
-_terminal_fd = None
-
-
-def save_terminal_state():
-    """Save terminal settings for emergency restoration."""
-    global _saved_terminal_settings, _terminal_fd
-    if sys.stdin.isatty():
-        _terminal_fd = sys.stdin.fileno()
-        _saved_terminal_settings = termios.tcgetattr(_terminal_fd)
-
-
-def restore_terminal_state():
-    """Restore terminal settings (safe to call from atexit/signal)."""
-    global _saved_terminal_settings, _terminal_fd
-    if _saved_terminal_settings is not None and _terminal_fd is not None:
-        try:
-            termios.tcsetattr(_terminal_fd, termios.TCSADRAIN, _saved_terminal_settings)
-        except Exception:
-            pass
-        # Also leave alternate screen buffer if stuck in it
-        try:
-            sys.stdout.write("\x1b[?1049l")
-            sys.stdout.flush()
-        except Exception:
-            pass
 
 
 def show_header():
@@ -170,33 +141,20 @@ def main_menu_loop() -> str:
     if not sys.stdin.isatty():
         return _menu_fallback()
 
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
     frame = 0
-    try:
-        tty.setraw(fd)
-        # Re-enable OPOST so Rich's \n still maps to \r\n (see PlayerUI.run).
-        raw_attrs = termios.tcgetattr(fd)
-        raw_attrs[1] = raw_attrs[1] | termios.OPOST
-        termios.tcsetattr(fd, termios.TCSANOW, raw_attrs)
+    with keyboard.raw_mode():
         console.clear()
         with Live(console=console, refresh_per_second=15, screen=True) as live:
             while True:
                 live.update(_menu_renderable(frame))
-                ready, _, _ = select.select([sys.stdin], [], [], 0.07)
-                if ready:
-                    ch = os.read(fd, 1).decode("utf-8", errors="ignore").lower()
-                    if ch == "\x1b":
-                        # Drain escape sequences (arrows) so they don't match keys.
-                        while select.select([sys.stdin], [], [], 0.01)[0]:
-                            os.read(fd, 1)
-                    elif ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+                key = keyboard.poll_key(0.07)
+                if key is not None:
+                    if key == keyboard.INTERRUPT:  # Ctrl-C / Ctrl-D
                         return "q"
-                    elif ch in _MENU_KEYS:
-                        return ch
+                    # Arrow/ESC/Enter tokens are multi-char and never in _MENU_KEYS.
+                    if len(key) == 1 and key.lower() in _MENU_KEYS:
+                        return key.lower()
                 frame += 1
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
 
 def read_key() -> str:
@@ -212,24 +170,14 @@ def read_key() -> str:
             return input().strip().lower()[:1]
         except (EOFError, KeyboardInterrupt):
             return "q"
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
-        tty.setraw(fd)
-        ch = os.read(fd, 1).decode("utf-8", errors="ignore")
-        if ch == "\x1b":
-            # Drain the rest of an escape sequence so its trailing bytes aren't
-            # read as separate keypresses.
-            while select.select([sys.stdin], [], [], 0.001)[0]:
-                os.read(fd, 1)
-            return ""
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    if ch in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+    with keyboard.raw_mode():
+        key = keyboard.read_key_blocking()
+    if key == keyboard.INTERRUPT:  # Ctrl-C / Ctrl-D
         return "q"
-    if ch in ("\r", "\n"):
+    # Enter, ESC and arrow keys have no single-char command meaning here.
+    if len(key) != 1:
         return ""
-    return ch.lower()
+    return key.lower()
 
 
 def prompt_url() -> str:
@@ -830,35 +778,23 @@ class PlayerUI:
         if not sys.stdin.isatty():
             raise RuntimeError("tunetape requires an interactive terminal.")
 
-        fd = sys.stdin.fileno()
-        old_settings = termios.tcgetattr(fd)
-
         # [#7] Non-daemon thread so Live.__exit__ runs on shutdown
         display_thread = threading.Thread(target=self._display_loop)
         display_thread.start()
 
         # Wait for display thread to enter Live context before setting raw mode.
-        # This avoids a race where tty.setraw() runs before Live has initialised.
+        # This avoids a race where raw mode is set before Live has initialised.
         self._display_ready.wait(timeout=3)
 
-        try:
-            tty.setraw(fd)
-            # tty.setraw() disables OPOST, which stops \n → \r\n translation.
-            # Rich relies on the terminal to translate \n to \r\n; without it
-            # the player text staircases off-screen and looks blank.
-            # Re-enable OPOST so display output renders correctly.
-            raw_attrs = termios.tcgetattr(fd)
-            raw_attrs[1] = raw_attrs[1] | termios.OPOST
-            termios.tcsetattr(fd, termios.TCSANOW, raw_attrs)
+        # keyboard.raw_mode() re-enables OPOST on POSIX so Rich's \n still maps
+        # to \r\n (otherwise the player text staircases off-screen); on Windows
+        # it's a no-op. Arrow keys arrive as keyboard.UP/DOWN/LEFT/RIGHT tokens.
+        with keyboard.raw_mode():
             while not self._stop.is_set():
-                # [#8] Use select with timeout so we can check _stop flag
-                ready, _, _ = select.select([sys.stdin], [], [], 0.5)
-                if not ready:
+                # [#8] Poll with a timeout so we can re-check the _stop flag.
+                ch = keyboard.poll_key(0.5)
+                if ch is None:
                     continue
-
-                ch = os.read(fd, 1).decode("utf-8", errors="ignore")
-                if not ch:
-                    break
 
                 if ch == " ":
                     self.controller.toggle_pause()
@@ -882,27 +818,16 @@ class PlayerUI:
                     self.controller.toggle_mute()
                 elif ch == "h":
                     self._show_help = not self._show_help
-                elif ch == "\x1b":
-                    # [#6] Use select with timeout to avoid blocking on bare ESC
-                    esc_ready, _, _ = select.select([sys.stdin], [], [], 0.05)
-                    if esc_ready:
-                        seq1 = os.read(fd, 1).decode("utf-8", errors="ignore")
-                        if seq1 == "[":
-                            seq2_ready, _, _ = select.select([sys.stdin], [], [], 0.05)
-                            if seq2_ready:
-                                seq2 = os.read(fd, 1).decode("utf-8", errors="ignore")
-                                if seq2 == "C":  # Right
-                                    self.controller.seek(10)
-                                elif seq2 == "D":  # Left
-                                    self.controller.seek(-10)
-                                elif seq2 == "A":  # Up
-                                    self.controller.set_volume_relative(5)
-                                elif seq2 == "B":  # Down
-                                    self.controller.set_volume_relative(-5)
-                elif ch == "\x03":  # Ctrl+C
+                elif ch == keyboard.RIGHT:
+                    self.controller.seek(10)
+                elif ch == keyboard.LEFT:
+                    self.controller.seek(-10)
+                elif ch == keyboard.UP:
+                    self.controller.set_volume_relative(5)
+                elif ch == keyboard.DOWN:
+                    self.controller.set_volume_relative(-5)
+                elif ch == keyboard.INTERRUPT:  # Ctrl+C / Ctrl-D
                     self._set_result("quit")
-        finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
 
         self._stop.set()
         display_thread.join(timeout=3)

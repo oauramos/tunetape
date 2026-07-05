@@ -7,15 +7,25 @@ uninstall.
 
 import json
 import os
+import sys
 import tempfile
 
 
 def data_dir() -> str:
-    """Return tunetape's data directory, honoring $XDG_DATA_HOME.
+    """Return tunetape's data directory.
 
-    Per the XDG spec, a relative (or empty) XDG_DATA_HOME is ignored so the
-    data dir stays stable regardless of the process's working directory.
+    On Windows this is ``%LOCALAPPDATA%\\tunetape``. On macOS/Linux it honors
+    ``$XDG_DATA_HOME`` (falling back to ``~/.local/share/tunetape``). Per the
+    XDG spec, a relative (or empty) XDG_DATA_HOME is ignored so the data dir
+    stays stable regardless of the process's working directory.
     """
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA")
+        base = local if local and os.path.isabs(local) else os.path.join(
+            os.path.expanduser("~"), "AppData", "Local"
+        )
+        return os.path.join(base, "tunetape")
+
     xdg = os.environ.get("XDG_DATA_HOME")
     base = xdg if xdg and os.path.isabs(xdg) else os.path.join(
         os.path.expanduser("~"), ".local", "share"

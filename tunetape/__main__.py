@@ -484,7 +484,13 @@ def main():
     save_terminal_state()
     atexit.register(_cleanup)
     signal.signal(signal.SIGINT, _signal_handler)
-    signal.signal(signal.SIGTERM, _signal_handler)
+    # SIGTERM exists but isn't delivered the same way on Windows; register it
+    # only where it's meaningful so this stays a no-crash on all platforms.
+    if hasattr(signal, "SIGTERM"):
+        try:
+            signal.signal(signal.SIGTERM, _signal_handler)
+        except (ValueError, OSError):
+            pass
 
     try:
         check_dependencies(require_ytdlp=False)
