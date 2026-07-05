@@ -6,7 +6,7 @@ import tunetape.config as config
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
     """Point the data dir (and thus config.json) at a fresh temp dir."""
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setattr(config.paths, "data_dir", lambda: str(tmp_path))
     return tmp_path
 
 

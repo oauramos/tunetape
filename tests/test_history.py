@@ -8,8 +8,8 @@ import tunetape.paths as paths
 
 @pytest.fixture
 def isolated(tmp_path, monkeypatch):
-    """Point the data dir at a fresh temp dir for each test."""
-    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    """Point the data dir at a fresh temp dir for each test (all platforms)."""
+    monkeypatch.setattr(paths, "data_dir", lambda: str(tmp_path))
     return tmp_path
 
 
