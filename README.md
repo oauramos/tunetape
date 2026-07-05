@@ -72,8 +72,11 @@ pip install git+https://github.com/albertowd/tunetape.git
 tunetape
 ```
 
-> `scoop install mpv yt-dlp` works too. Use Windows Terminal (or any VT-capable
-> console) for the best rendering. `pip` pulls in `pywin32` automatically on Windows.
+> `scoop install mpv yt-dlp` works too. No `PATH` editing needed — tunetape also
+> looks in the standard winget/scoop install locations (e.g. `C:\Program Files\MPV
+> Player\`), so mpv and yt-dlp are found even when their installer doesn't add them
+> to `PATH`. Use Windows Terminal (or any VT-capable console) for the best
+> rendering. `pip` pulls in `pywin32` automatically on Windows.
 
 ### Linux
 

@@ -1,8 +1,11 @@
 import atexit
+import glob
 import json
+import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 
@@ -10,10 +13,62 @@ from tunetape.ipc import create_ipc
 from tunetape.models import Album, Track
 
 
+# Cache resolved executable paths so we probe the filesystem at most once each.
+_resolved_exe = {}
+
+
+def _windows_exe_candidates(name):
+    """Well-known install dirs winget/scoop use but may not add to PATH.
+
+    winget's ``shinchiro.mpv`` extracts to ``C:\\Program Files\\MPV Player``
+    without touching PATH, so ``shutil.which`` reports mpv missing even when it
+    is installed. Return absolute paths to probe, most-specific first.
+    """
+    exe = f"{name}.exe"
+    home = os.path.expanduser("~")
+    localappdata = os.environ.get("LOCALAPPDATA", "")
+    candidates = [
+        # scoop normally keeps its shim dir on PATH; probe it anyway as a fallback.
+        os.path.join(home, "scoop", "shims", exe),
+        os.path.join(home, "scoop", "apps", name, "current", exe),
+    ]
+    if name == "mpv":
+        candidates += [
+            r"C:\Program Files\MPV Player\mpv.exe",  # winget: shinchiro.mpv
+            r"C:\Program Files\mpv\mpv.exe",
+            os.path.join(localappdata, "Programs", "mpv", "mpv.exe"),
+        ]
+    if localappdata:
+        # winget extracts each package under a versioned subfolder — glob across them.
+        candidates += glob.glob(
+            os.path.join(localappdata, "Microsoft", "WinGet", "Packages",
+                         f"*{name}*", "**", exe),
+            recursive=True,
+        )
+    return candidates
+
+
+def find_executable(name):
+    """Locate a CLI tool, honoring PATH first, then known Windows install dirs.
+
+    Returns an absolute path (or the bare name when found on PATH) suitable as
+    ``argv[0]``, or None if the tool can't be found anywhere.
+    """
+    if name in _resolved_exe:
+        return _resolved_exe[name]
+
+    found = shutil.which(name)
+    if found is None and sys.platform == "win32":
+        for path in _windows_exe_candidates(name):
+            if os.path.isfile(path):
+                found = path
+                break
+    _resolved_exe[name] = found
+    return found
+
+
 def _install_hint(pkg: str) -> str:
     """Platform-appropriate one-liner for installing a missing dependency."""
-    import sys
-
     if sys.platform == "win32":
         return f"Install it with: winget install {pkg}  (or: scoop install {pkg})"
     if sys.platform == "darwin":
@@ -23,9 +78,9 @@ def _install_hint(pkg: str) -> str:
 
 def check_dependencies(require_ytdlp: bool = True):
     """Verify mpv (always) and yt-dlp (when required) exist in PATH."""
-    if not shutil.which("mpv"):
+    if not find_executable("mpv"):
         raise RuntimeError(f"mpv is not installed. {_install_hint('mpv')}")
-    if require_ytdlp and not shutil.which("yt-dlp"):
+    if require_ytdlp and not find_executable("yt-dlp"):
         raise RuntimeError(f"yt-dlp is not installed. {_install_hint('yt-dlp')}")
 
 
@@ -60,7 +115,8 @@ def resolve_with_ytdlp(arg: str) -> dict:
     """
     try:
         result = subprocess.run(
-            ["yt-dlp", "-f", "bestaudio", "--get-url", "--get-title", arg],
+            [find_executable("yt-dlp") or "yt-dlp",
+             "-f", "bestaudio", "--get-url", "--get-title", arg],
             capture_output=True,
             text=True,
             timeout=30,
@@ -134,7 +190,7 @@ def fetch_youtube_playlist(url: str) -> Album:
 
     try:
         result = subprocess.run(
-            ["yt-dlp", "--flat-playlist", "--no-warnings",
+            [find_executable("yt-dlp") or "yt-dlp", "--flat-playlist", "--no-warnings",
              "--print", "%(id)s|%(title)s", url],
             capture_output=True,
             text=True,
@@ -196,7 +252,7 @@ class MPVController:
         self._ipc.reset()
 
         args = [
-            "mpv",
+            find_executable("mpv") or "mpv",
             "--no-video",
             "--no-terminal",
             f"--input-ipc-server={self._ipc.server_address}",

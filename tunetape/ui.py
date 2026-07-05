@@ -1,5 +1,4 @@
 import os
-import shutil
 import sys
 import threading
 import time
@@ -19,6 +18,7 @@ from tunetape import __version__, ai, art, config, debug, keyboard, paths
 from tunetape.art import ACCENT, ACCENT2
 # Re-exported so callers (e.g. __main__) keep importing them from tunetape.ui.
 from tunetape.keyboard import restore_terminal_state, save_terminal_state  # noqa: F401
+from tunetape.player import find_executable
 
 
 def set_accent(color: str) -> None:
@@ -684,8 +684,8 @@ def show_debug():
         console.print()
         console.print(f"  [bold {ACCENT}]Debug / Logs[/]  [dim]· this session[/dim]")
         console.print()
-        mpv = "[green]ok[/green]" if shutil.which("mpv") else "[red]missing[/red]"
-        ytdlp = "[green]ok[/green]" if shutil.which("yt-dlp") else "[red]missing[/red]"
+        mpv = "[green]ok[/green]" if find_executable("mpv") else "[red]missing[/red]"
+        ytdlp = "[green]ok[/green]" if find_executable("yt-dlp") else "[red]missing[/red]"
         console.print(
             f"  [dim]tunetape[/dim] {escape(__version__)}   "
             f"[dim]mpv[/dim] {mpv}   [dim]yt-dlp[/dim] {ytdlp}"
