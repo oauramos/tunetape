@@ -36,23 +36,35 @@ def _windows_exe_candidates(name):
         candidates += [
             r"C:\Program Files\MPV Player\mpv.exe",  # winget: shinchiro.mpv
             r"C:\Program Files\mpv\mpv.exe",
-            os.path.join(localappdata, "Programs", "mpv", "mpv.exe"),
         ]
     if localappdata:
-        # winget extracts each package under a versioned subfolder — glob across them.
-        candidates += glob.glob(
+        if name == "mpv":
+            candidates.append(os.path.join(localappdata, "Programs", "mpv", "mpv.exe"))
+        # winget extracts each package under a versioned subfolder — glob across
+        # them and probe the most recently modified first, so a fresh upgrade
+        # wins over a leftover older version left behind in a sibling folder.
+        matches = glob.glob(
             os.path.join(localappdata, "Microsoft", "WinGet", "Packages",
                          f"*{name}*", "**", exe),
             recursive=True,
         )
+
+        def _mtime(path):
+            try:
+                return os.path.getmtime(path)
+            except OSError:
+                return 0.0
+
+        matches.sort(key=_mtime, reverse=True)
+        candidates += matches
     return candidates
 
 
 def find_executable(name):
     """Locate a CLI tool, honoring PATH first, then known Windows install dirs.
 
-    Returns an absolute path (or the bare name when found on PATH) suitable as
-    ``argv[0]``, or None if the tool can't be found anywhere.
+    Returns an absolute path suitable as ``argv[0]``, or None if the tool can't
+    be found anywhere.
     """
     if name in _resolved_exe:
         return _resolved_exe[name]
@@ -63,7 +75,11 @@ def find_executable(name):
             if os.path.isfile(path):
                 found = path
                 break
-    _resolved_exe[name] = found
+    # Cache only successful resolutions: a tool the user installs mid-session
+    # should be re-probed and picked up rather than staying "missing" for the
+    # life of the process.
+    if found is not None:
+        _resolved_exe[name] = found
     return found
 
 

@@ -32,7 +32,11 @@ _ARROWS = (UP, DOWN, LEFT, RIGHT)
 _WINDOWS = sys.platform == "win32"
 
 if _WINDOWS:
+    import ctypes
     import msvcrt
+
+    _STD_INPUT_HANDLE = -10
+    _ENABLE_PROCESSED_INPUT = 0x0001  # when set, the console turns Ctrl-C into SIGINT
 else:
     import os
     import select
@@ -63,12 +67,44 @@ def restore_terminal_state():
         except Exception:
             pass
     # Also leave the alternate screen buffer if we're stuck in it. This is a
-    # plain ANSI sequence and works on modern Windows consoles (VT) too.
+    # plain ANSI sequence and works on modern Windows consoles (VT) too. Only
+    # emit it to a real terminal so a redirected/piped stdout doesn't collect a
+    # stray escape sequence.
     try:
-        sys.stdout.write("\x1b[?1049l")
-        sys.stdout.flush()
+        if sys.stdout.isatty():
+            sys.stdout.write("\x1b[?1049l")
+            sys.stdout.flush()
     except Exception:
         pass
+
+
+@contextmanager
+def _windows_raw_mode():
+    """Disable the console's Ctrl-C processing for the duration of the block.
+
+    With ``ENABLE_PROCESSED_INPUT`` cleared, Ctrl-C is delivered as a ``\\x03``
+    keypress (decoded to :data:`INTERRUPT`) instead of raising SIGINT — matching
+    POSIX raw mode so callers handle it the same way on every platform. ``msvcrt``
+    already reads keypresses without echo/line buffering, so nothing else changes.
+    Falls back to a no-op when stdin isn't a real console (redirected/piped).
+    """
+    kernel32 = ctypes.windll.kernel32
+    # Explicit signatures so the pointer-sized console HANDLE isn't truncated to
+    # a 32-bit int by ctypes' default c_int return/arg types on 64-bit Windows.
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    kernel32.GetStdHandle.argtypes = [ctypes.c_uint]
+    kernel32.GetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
+    kernel32.SetConsoleMode.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    handle = kernel32.GetStdHandle(_STD_INPUT_HANDLE)
+    mode = ctypes.c_uint()
+    have_mode = bool(kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    if have_mode:
+        kernel32.SetConsoleMode(handle, mode.value & ~_ENABLE_PROCESSED_INPUT)
+    try:
+        yield
+    finally:
+        if have_mode:
+            kernel32.SetConsoleMode(handle, mode.value)
 
 
 @contextmanager
@@ -76,10 +112,14 @@ def raw_mode():
     """Put the terminal in single-keypress mode for the duration of the block.
 
     POSIX: enable raw mode but keep OPOST so Rich's ``\\n`` still maps to
-    ``\\r\\n`` (otherwise output staircases). Windows: a no-op — ``msvcrt``
-    reads keypresses directly without changing console mode.
+    ``\\r\\n`` (otherwise output staircases). Windows: keep ``msvcrt``'s direct
+    key reads but disable console Ctrl-C processing so it arrives as INTERRUPT.
     """
-    if _WINDOWS or not sys.stdin.isatty():
+    if _WINDOWS:
+        with _windows_raw_mode():
+            yield
+        return
+    if not sys.stdin.isatty():
         yield
         return
     fd = sys.stdin.fileno()
@@ -131,7 +171,13 @@ else:
     _ESC_SEQ = {"C": RIGHT, "D": LEFT, "A": UP, "B": DOWN}
 
     def _decode_posix(fd):
-        ch = os.read(fd, 1).decode("utf-8", errors="ignore")
+        raw = os.read(fd, 1)
+        if not raw:
+            # Empty read = EOF: the controlling terminal/pty closed. Treat it
+            # like Ctrl-C so callers quit instead of spinning on a fd that
+            # select() reports readable forever.
+            return INTERRUPT
+        ch = raw.decode("utf-8", errors="ignore")
         if ch == "\x1b":
             # Try to read a CSI arrow sequence (ESC [ <letter>); drain anything
             # else so stray bytes aren't read as separate keypresses.
