@@ -14,7 +14,7 @@ from tunetape.player import MPVController
 def _controller(tmp_path):
     """An MPVController with its paths set up but no mpv process spawned."""
     c = MPVController.__new__(MPVController)
-    c._sock_dir = str(tmp_path)
+    c._log_dir = str(tmp_path)
     c._log_path = os.path.join(str(tmp_path), "mpv.stderr")
     c._log_file = None
     return c

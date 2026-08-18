@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS-black?style=flat-square&logo=apple" alt="macOS">
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-black?style=flat-square" alt="macOS | Linux | Windows">
   <img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
   <img src="https://img.shields.io/github/license/oauramos/tunetape?style=flat-square" alt="License">
   <img src="https://img.shields.io/github/v/tag/oauramos/tunetape?style=flat-square&label=version" alt="Version">
@@ -45,6 +45,8 @@ tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard co
 
 ## Install
 
+### macOS
+
 One command via [Homebrew](https://brew.sh) — pulls in everything (Python, mpv, yt-dlp; FFmpeg rides along with mpv):
 
 ```bash
@@ -58,6 +60,31 @@ tunetape
 ```
 
 > `oauramos/tunetape` is a Homebrew *tap*; brew adds it automatically the first time.
+
+### Windows
+
+Install the media tools, then tunetape via pip:
+
+```powershell
+winget install shinchiro.mpv        # mpv (yt-dlp/ffmpeg bundle)
+winget install yt-dlp.yt-dlp        # or: pip install yt-dlp
+pip install git+https://github.com/albertowd/tunetape.git
+tunetape
+```
+
+> `scoop install mpv yt-dlp` works too. No `PATH` editing needed — tunetape also
+> looks in the standard winget/scoop install locations (e.g. `C:\Program Files\MPV
+> Player\`), so mpv and yt-dlp are found even when their installer doesn't add them
+> to `PATH`. Use Windows Terminal (or any VT-capable console) for the best
+> rendering. `pip` pulls in `pywin32` automatically on Windows.
+
+### Linux
+
+```bash
+sudo apt install mpv yt-dlp        # or your distro's package manager
+pip install git+https://github.com/albertowd/tunetape.git
+tunetape
+```
 
 <details>
 <summary><b>Alternative: install script</b></summary>
@@ -80,10 +107,11 @@ curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh |
 If you already have the dependencies:
 
 ```bash
-brew install mpv yt-dlp
+brew install mpv yt-dlp            # macOS; use apt/winget/scoop elsewhere
 git clone https://github.com/oauramos/tunetape.git
 cd tunetape
 python3 -m venv .venv && source .venv/bin/activate
+# Windows (PowerShell): py -m venv .venv ; .\.venv\Scripts\Activate.ps1
 pip install .
 ```
 
@@ -235,11 +263,11 @@ Pick **Discover** from the main menu, type a request, then choose a suggestion:
 
 ## Requirements
 
-- macOS (uses Unix sockets + termios)
+- **macOS, Linux, or Windows** — the terminal UI and mpv IPC layer are cross-platform (Unix sockets on macOS/Linux, named pipes on Windows)
 - Python 3.9+
-- [Homebrew](https://brew.sh) (for the recommended install; the script installs it automatically if missing)
+- [mpv](https://mpv.io/) (always) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) (for YouTube/Spotify) on your `PATH`
 
-> Listening history and settings live in `~/.local/share/tunetape/` and persist across upgrades.
+> Listening history and settings live in `~/.local/share/tunetape/` on macOS/Linux and `%LOCALAPPDATA%\tunetape\` on Windows, and persist across upgrades.
 
 ---
 

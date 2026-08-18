@@ -1,15 +1,21 @@
 import os
+import sys
 
 import pytest
 
 import tunetape.paths as paths
 
+posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX XDG semantics")
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows LOCALAPPDATA semantics")
 
+
+@posix_only
 def test_data_dir_uses_absolute_xdg(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
     assert paths.data_dir() == os.path.join(str(tmp_path), "tunetape")
 
 
+@posix_only
 def test_data_dir_ignores_relative_xdg(monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", "relative/dir")
     # Relative value must be ignored (XDG spec) -> falls back to ~/.local/share.
@@ -17,9 +23,24 @@ def test_data_dir_ignores_relative_xdg(monkeypatch):
     assert os.path.isabs(paths.data_dir())
 
 
+@posix_only
 def test_data_dir_ignores_empty_xdg(monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", "")
     assert paths.data_dir().endswith(os.path.join(".local", "share", "tunetape"))
+
+
+@windows_only
+def test_data_dir_uses_localappdata(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    assert paths.data_dir() == os.path.join(str(tmp_path), "tunetape")
+
+
+@windows_only
+def test_data_dir_ignores_xdg_on_windows(tmp_path, monkeypatch):
+    # XDG_DATA_HOME is a POSIX concept; Windows must ignore it in favor of LOCALAPPDATA.
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    assert paths.data_dir() == os.path.join(str(tmp_path / "local"), "tunetape")
 
 
 def test_atomic_write_round_trip(tmp_path):

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: test (${{ matrix.os }} · py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Explicit combos: every OS on 3.13, plus the 3.9 floor. macos-latest is
+        # arm64 (no 3.9 in the runner manifest), so the 3.9 macOS job uses x64 macos-13.
+        include:
+          - { os: ubuntu-latest, python-version: "3.9" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: macos-13, python-version: "3.9" }
+          - { os: macos-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.9" }
+          - { os: windows-latest, python-version: "3.13" }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with test extras
+        run: python -m pip install --upgrade pip && pip install -e ".[test]"
+
+      - name: Import smoke test (all platforms)
+        run: python -c "import tunetape.ui, tunetape.player; from tunetape import keyboard, ipc; print('imports OK on', __import__('sys').platform)"
+
+      - name: Run tests
+        run: pytest -q

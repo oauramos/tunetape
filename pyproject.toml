@@ -20,11 +20,13 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Operating System :: MacOS",
     "Operating System :: POSIX",
+    "Operating System :: Microsoft :: Windows",
     "Environment :: Console",
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 dependencies = [
     "rich>=13.0,<15",
+    "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
