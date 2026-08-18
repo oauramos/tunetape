@@ -6,9 +6,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
+from tunetape import debug
 from tunetape.ipc import create_ipc
 from tunetape.models import Album, Track
 
@@ -113,6 +115,32 @@ def is_youtube_url(url: str) -> bool:
     return bool(_YOUTUBE_RE.match(url.strip()))
 
 
+# YouTube's SABR rollout caps the stream URLs handed out by yt-dlp's default
+# client (android_vr): they carry `rqh=1` and only answer small, bounded ranged
+# requests. ffmpeg — and so mpv — always opens a stream with an open-ended
+# `Range: bytes=0-`, which those URLs reject with HTTP 403. mpv's output was
+# discarded at the time, so the only symptom was playback frozen at 0:00.
+#
+# The web_embedded client still returns plain, uncapped URLs that mpv streams
+# directly. tv_embedded and android_vr stay on as fallbacks for the occasional
+# video web_embedded has no formats for; web_embedded wins whenever it does.
+# See https://github.com/yt-dlp/yt-dlp/issues/12482
+_DEFAULT_YTDLP_CLIENTS = "web_embedded,tv_embedded,android_vr"
+
+# mpv echoes the whole stream URL in its load errors; keep log lines readable.
+_MPV_LOG_LINE_MAX = 200
+
+
+def _ytdlp_client_args() -> list:
+    """Extractor args pinning which YouTube client yt-dlp resolves streams with.
+
+    $TUNETAPE_YTDLP_CLIENT overrides the default list, so a future YouTube
+    change can be worked around in place instead of waiting on a release.
+    """
+    clients = os.environ.get("TUNETAPE_YTDLP_CLIENT", "").strip() or _DEFAULT_YTDLP_CLIENTS
+    return ["--extractor-args", f"youtube:player_client={clients}"]
+
+
 def get_stream_info(url: str) -> dict:
     """Extract audio stream URL and title from a YouTube URL."""
     url = url.strip()
@@ -132,7 +160,8 @@ def resolve_with_ytdlp(arg: str) -> dict:
     try:
         result = subprocess.run(
             [find_executable("yt-dlp") or "yt-dlp",
-             "-f", "bestaudio", "--get-url", "--get-title", arg],
+             "-f", "bestaudio", *_ytdlp_client_args(),
+             "--get-url", "--get-title", arg],
             capture_output=True,
             text=True,
             timeout=30,
@@ -241,6 +270,14 @@ class MPVController:
         # [#5] IPC endpoint (Unix socket in a private temp dir, or a named pipe on
         # Windows) — platform detail lives in tunetape.ipc.
         self._ipc = create_ipc()
+        # mpv's output goes to a file rather than /dev/null: when a stream fails
+        # to load (a 403 on the media URL, say) mpv reports it there and nowhere
+        # else, and without it the UI can only show a player stuck at 0:00.
+        # Its own private dir, since the Windows transport has no temp dir to
+        # borrow and the Unix one cleans its dir up on its own schedule.
+        self._log_dir = tempfile.mkdtemp(prefix="tunetape_log_")
+        self._log_path = os.path.join(self._log_dir, "mpv.log")
+        self._log_file = None
         # [#2] Use RLock to prevent deadlock when signal handler calls quit() while lock is held
         self._lock = threading.RLock()
         self._proc = None
@@ -257,6 +294,7 @@ class MPVController:
             # once without it before giving up so playback isn't blocked.
             if not (normalize and self._spawn_and_connect(stream_url, False, volume)):
                 self._ipc.cleanup()
+                self._cleanup_log()
                 raise RuntimeError("Could not connect to the player. Try again.")
 
     def _spawn_and_connect(self, stream_url: str, normalize: bool, volume: float = None) -> bool:
@@ -270,7 +308,13 @@ class MPVController:
         args = [
             find_executable("mpv") or "mpv",
             "--no-video",
-            "--no-terminal",
+            # --no-terminal would silence mpv completely, including the load
+            # errors we want captured. --no-input-terminal keeps it from
+            # touching stdin (the TUI owns the keyboard) while --msg-level
+            # limits output to real errors, which are redirected to a file
+            # below and never reach the user's terminal.
+            "--no-input-terminal",
+            "--msg-level=all=error",
             f"--input-ipc-server={self._ipc.server_address}",
         ]
         if normalize:
@@ -284,10 +328,19 @@ class MPVController:
         # [#11] Use -- separator so stream_url can't be interpreted as mpv flag
         args += ["--", stream_url]
 
+        # Truncate per attempt so a retry's log can't be read as the first try's,
+        # closing the previous attempt's handle instead of leaking it.
+        if self._log_file is not None:
+            try:
+                self._log_file.close()
+            except OSError:
+                pass
+        self._log_file = open(self._log_path, "w+b")
+        # mpv writes its messages to stdout, not stderr; fold both into the file.
         self._proc = subprocess.Popen(
             args,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=self._log_file,
+            stderr=subprocess.STDOUT,
         )
         # Reap this child even if SIGINT/exit fires before the caller stores us
         # (the socket-wait below can block for up to 5s). quit() is idempotent
@@ -305,8 +358,49 @@ class MPVController:
         except subprocess.TimeoutExpired:
             self._proc.kill()
             self._proc.wait()
+        # Log only once mpv has exited, so its complaint is fully written out.
+        self._log_mpv_output("mpv did not open its IPC socket")
         atexit.unregister(self.quit)
         return False
+
+    def _log_mpv_output(self, prefix: str) -> None:
+        """Copy whatever mpv reported into the in-session debug log.
+
+        Best-effort: a missing or unreadable log must never break teardown.
+        """
+        try:
+            with open(self._log_path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read().strip()
+        except OSError:
+            return
+        if not text:
+            return
+        # Keep the tail — the load error comes last. Each line is truncated
+        # because mpv echoes the full stream URL, which is ~1.5 KB of query
+        # string and would swamp the Debug screen.
+        for line in [ln.strip() for ln in text.splitlines() if ln.strip()][-10:]:
+            if len(line) > _MPV_LOG_LINE_MAX:
+                line = line[:_MPV_LOG_LINE_MAX] + "…"
+            debug.log(f"{prefix}: {line}", "ERROR")
+
+    def _cleanup_log(self):
+        """Close and remove the mpv log file and its private directory."""
+        try:
+            if self._log_file is not None:
+                self._log_file.close()
+                self._log_file = None
+        except OSError:
+            pass
+        try:
+            if os.path.exists(self._log_path):
+                os.unlink(self._log_path)
+        except OSError:
+            pass
+        try:
+            if os.path.exists(self._log_dir):
+                os.rmdir(self._log_dir)
+        except OSError:
+            pass
 
     def _send(self, command: list) -> dict:
         with self._lock:
@@ -427,7 +521,11 @@ class MPVController:
             self._ipc.close()
         except Exception:
             pass
+        # Read the log before _cleanup_log() deletes it, so anything mpv
+        # complained about this session is visible on the Debug screen.
+        self._log_mpv_output("mpv")
         self._ipc.cleanup()
+        self._cleanup_log()
         try:
             atexit.unregister(self.quit)
         except Exception:

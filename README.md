@@ -271,6 +271,25 @@ Pick **Discover** from the main menu, type a request, then choose a suggestion:
 
 ---
 
+## Troubleshooting
+
+**A track loads but the timer sits at 0:00.** YouTube periodically changes which
+of its player clients hand out stream URLs that `mpv` can read. tunetape asks
+`yt-dlp` for a client that works, but if YouTube shifts again you can point it at
+a different one without waiting for a release:
+
+```bash
+TUNETAPE_YTDLP_CLIENT=tv_embedded tunetape
+```
+
+Any client list `yt-dlp` accepts for `youtube:player_client` works; entries are
+tried in order. Keeping `yt-dlp` current helps too — `brew upgrade yt-dlp`.
+
+Press `d` on the main menu to open **Debug / Logs**, which now shows what `mpv`
+reported when a stream fails to open.
+
+---
+
 ## License
 
 This project is free to use, modify, and distribute. See [MIT License](LICENSE) for details.
