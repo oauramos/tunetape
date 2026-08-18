@@ -14,11 +14,16 @@ jobs:
       fail-fast: false
       matrix:
         # Explicit combos: every OS on 3.13, plus the 3.9 floor. macos-latest is
-        # arm64 (no 3.9 in the runner manifest), so the 3.9 macOS job uses x64 macos-13.
+        # arm64, which has no 3.9 in the runner manifest; the x64 macos-13 runners
+        # that used to cover it have been retired, so that job now sits queued
+        # forever and the whole run never completes. The macOS floor is therefore
+        # 3.10 (the oldest arm64 build available) — the 3.9 floor itself stays
+        # covered on Ubuntu and Windows, and macOS shares the POSIX code path
+        # with Ubuntu.
         include:
           - { os: ubuntu-latest, python-version: "3.9" }
           - { os: ubuntu-latest, python-version: "3.13" }
-          - { os: macos-13, python-version: "3.9" }
+          - { os: macos-latest, python-version: "3.10" }
           - { os: macos-latest, python-version: "3.13" }
           - { os: windows-latest, python-version: "3.9" }
           - { os: windows-latest, python-version: "3.13" }
