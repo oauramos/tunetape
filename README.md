@@ -1,300 +1,174 @@
 <p align="center">
-  <img src="assets/logo.png" alt="tunetape logo" width="200">
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-black?style=flat-square" alt="macOS | Linux | Windows">
-  <img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
-  <img src="https://img.shields.io/github/license/oauramos/tunetape?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/v/tag/oauramos/tunetape?style=flat-square&label=version" alt="Version">
+  <img src="assets/logo.png" alt="tunetape logo" width="180">
 </p>
 
 <h1 align="center">tunetape</h1>
 
 <p align="center">
-  <b>Stream audio straight from your terminal.</b><br>
-  <sub>YouTube. Video game soundtracks. No browser. No distractions. Just music.</sub>
+  <b>Stream music from YouTube, Spotify and KHInsider, right inside your terminal.</b><br>
+  <sub>Paste a link. Press Enter. Listen. No browser, no tabs, no ads.</sub>
+</p>
+
+<p align="center">
+  <a href="https://github.com/oauramos/tunetape/actions/workflows/ci.yml"><img src="https://github.com/oauramos/tunetape/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-black?style=flat-square" alt="macOS | Linux | Windows">
+  <img src="https://img.shields.io/badge/python-3.9+-blue?style=flat-square&logo=python&logoColor=white" alt="Python 3.9+">
+  <a href="https://github.com/oauramos/tunetape/releases"><img src="https://img.shields.io/github/v/release/oauramos/tunetape?style=flat-square&label=version" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/oauramos/tunetape?style=flat-square" alt="MIT License"></a>
+</p>
+
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#screens">Screens</a> ·
+  <a href="#keys-you-will-actually-use">Keys</a> ·
+  <a href="https://github.com/oauramos/tunetape/wiki">Wiki</a>
 </p>
 
 <br>
 
 <p align="center">
-  <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
+  <img src="assets/menu.png" alt="tunetape main menu: a tuna carrying a cassette, with Play, History, Discover and Settings buttons" width="860">
 </p>
 
----
+<br>
 
-## How it works
+## What is tunetape?
 
-```
-tunetape → paste a URL → music plays in your terminal
-```
+tunetape is a small, keyboard-driven audio player that lives in your terminal. It hands the stream to [mpv](https://mpv.io/) (audio only) and wraps it in a clean text UI with real player controls. Nothing is downloaded or stored; it just plays.
 
-tunetape plays audio through **mpv** (no video) with a clean TUI and keyboard controls — all without leaving the terminal. Pick **Play**, paste any supported URL, and tunetape figures out the source.
-
-**Three sources:**
-- **YouTube** — paste any YouTube video **or playlist** URL. Audio extracted via **yt-dlp**.
-- **Spotify** — paste a Spotify track **or playlist** URL. Spotify audio is DRM-locked, so tunetape reads the public track list (no login) and streams each song's match from YouTube.
-- **KHInsider** — paste a [downloads.khinsider.com](https://downloads.khinsider.com) album URL. Full playlist with next/prev track controls.
-
-**Discover (AI):** don't have a link in mind? Pick **Discover**, describe a vibe — *"upbeat 80s synthwave"*, *"calm piano for focus"* — and an AI suggests real songs you can pick from and play (streamed via YouTube). Bring your own [Anthropic API key](https://console.anthropic.com) (set it in **Settings → AI discovery**, or via the `ANTHROPIC_API_KEY` environment variable); the feature stays off until a key is provided.
-
-**Remembers what you play:** every track, playlist, and album lands in a **Recently played** menu, so you can jump back in — playlists and albums even resume at the track you left off. Your last volume is remembered too, so playback picks up where you left it. Volume normalization (toggle in **Settings**) keeps loudness even across sources, powered by mpv's built-in FFmpeg filters.
-
----
+- **Play from three sources.** YouTube videos and playlists, Spotify tracks and playlists, and [KHInsider](https://downloads.khinsider.com) video game soundtracks. Paste any link and the source is detected for you.
+- **A real player.** Play/pause, seek, a volume meter, mute, next/previous track, and auto-advance through playlists.
+- **Recently played.** Everything you play is remembered, and playlists resume at the track you left off.
+- **Discover with AI.** Describe a vibe ("calm piano for focus") and get a list of real songs to play. Bring your own API key; the feature stays off until you add one.
+- **Sounds even.** Optional loudness normalization keeps volume consistent across sources, and your last volume is remembered.
+- **Runs everywhere.** macOS, Linux and Windows.
 
 ## Install
 
+You need two tools on your machine, [mpv](https://mpv.io/) and [yt-dlp](https://github.com/yt-dlp/yt-dlp), plus tunetape itself. Pick your OS:
+
 ### macOS
 
-One command via [Homebrew](https://brew.sh) — pulls in everything (Python, mpv, yt-dlp; FFmpeg rides along with mpv):
+One command via [Homebrew](https://brew.sh). It brings in Python, mpv and yt-dlp for you:
 
 ```bash
 brew install oauramos/tunetape/tunetape
 ```
 
-Then run:
-
-```bash
-tunetape
-```
-
-> `oauramos/tunetape` is a Homebrew *tap*; brew adds it automatically the first time.
-
 ### Windows
 
-Install the media tools, then tunetape via pip:
-
 ```powershell
-winget install shinchiro.mpv        # mpv (yt-dlp/ffmpeg bundle)
-winget install yt-dlp.yt-dlp        # or: pip install yt-dlp
-pip install git+https://github.com/albertowd/tunetape.git
-tunetape
+winget install shinchiro.mpv
+winget install yt-dlp.yt-dlp
+pip install git+https://github.com/oauramos/tunetape.git
 ```
-
-> `scoop install mpv yt-dlp` works too. No `PATH` editing needed — tunetape also
-> looks in the standard winget/scoop install locations (e.g. `C:\Program Files\MPV
-> Player\`), so mpv and yt-dlp are found even when their installer doesn't add them
-> to `PATH`. Use Windows Terminal (or any VT-capable console) for the best
-> rendering. `pip` pulls in `pywin32` automatically on Windows.
 
 ### Linux
 
 ```bash
 sudo apt install mpv yt-dlp        # or your distro's package manager
-pip install git+https://github.com/albertowd/tunetape.git
+pip install git+https://github.com/oauramos/tunetape.git
+```
+
+### Run it
+
+```bash
 tunetape
 ```
 
-<details>
-<summary><b>Alternative: install script</b></summary>
+That's it. Press **1**, paste a link, and press Enter.
 
-<br>
+> Want another way in? The install script, manual install, `uv`/`pipx`, upgrading and uninstalling are all covered in the wiki: **[Installation](https://github.com/oauramos/tunetape/wiki/Installation)**.
 
-Prefer not to tap? A script installs everything into `~/.tunetape`:
+## How it works
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh | bash
-```
+### 1. Paste a link
 
-</details>
+Press **1** on the main menu and paste a YouTube, Spotify or KHInsider URL. tunetape figures out which source it is.
 
-<details>
-<summary><b>Manual install</b></summary>
+<p align="center">
+  <img src="assets/play.png" alt="The Play screen asking for a URL, with a YouTube link pasted in" width="860">
+</p>
 
-<br>
+### 2. It plays
 
-If you already have the dependencies:
+The stream opens in mpv and you get a player with a progress bar, volume meter and one-key controls.
 
-```bash
-brew install mpv yt-dlp            # macOS; use apt/winget/scoop elsewhere
-git clone https://github.com/oauramos/tunetape.git
-cd tunetape
-python3 -m venv .venv && source .venv/bin/activate
-# Windows (PowerShell): py -m venv .venv ; .\.venv\Scripts\Activate.ps1
-pip install .
-```
+<p align="center">
+  <img src="assets/player.png" alt="The player screen showing Now Playing, a progress bar, the volume meter and boxed key controls" width="860">
+</p>
 
-> **Note:** `yt-dlp` is required for YouTube and Spotify (Spotify songs stream via YouTube). KHInsider works with just `mpv`.
+### 3. Playlists just work
 
-</details>
+Spotify playlists, YouTube playlists and KHInsider albums show the track position and add **n** / **p** for next and previous. Tracks advance on their own.
 
-<details>
-<summary><b>Uninstall</b></summary>
-
-<br>
-
-Homebrew:
-
-```bash
-brew uninstall tunetape && brew untap oauramos/tunetape
-```
-
-Install script:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/oauramos/tunetape/main/install.sh | bash -s uninstall
-```
-
-> Your listening history in `~/.local/share/tunetape/` is left in place — delete that folder too for a full wipe.
-
-</details>
-
----
+<p align="center">
+  <img src="assets/playlist.png" alt="The player in playlist mode showing Track 12/64 with next and prev buttons" width="860">
+</p>
 
 ## Screens
 
-### Main Menu
+### Recently played
+
+Jump back into anything you have played. Playlists and albums resume where you stopped.
 
 <p align="center">
-  <img src="assets/menu.svg" alt="tunetape menu" width="600">
-</p>
-
-### Player
-
-Paste any supported URL — the source is auto-detected.
-
-<p align="center">
-  <img src="assets/player.svg" alt="tunetape player" width="600">
-</p>
-
-### Playlist Player
-
-Spotify playlists, YouTube playlists, and KHInsider albums get next/prev track controls.
-
-<p align="center">
-  <img src="assets/playlist.svg" alt="tunetape playlist player" width="600">
-</p>
-
-### Recently Played
-
-Everything you play is remembered — playlists and albums resume where you left off.
-
-<p align="center">
-  <img src="assets/history.svg" alt="tunetape recently played" width="600">
+  <img src="assets/history.png" alt="The Recently played list with YouTube, Spotify, KHInsider and AI entries" width="860">
 </p>
 
 ### Discover (AI)
 
-Describe a vibe and pick from AI-suggested songs — each plays via YouTube.
+Type what you feel like hearing and pick a song from the suggestions. Each one streams from YouTube.
 
 <p align="center">
-  <img src="assets/discover.svg" alt="tunetape AI discovery suggestions" width="600">
+  <img src="assets/discover.png" alt="AI suggestions for the request 'upbeat 80s synthwave'" width="860">
 </p>
 
-### AI Discovery Settings
+### Settings
 
-Bring your own key; point it at Anthropic or any compatible gateway.
+Toggle loudness normalization, pick an accent color for the whole interface, and set up AI discovery.
 
 <p align="center">
-  <img src="assets/ai-settings.svg" alt="tunetape AI discovery settings" width="600">
+  <img src="assets/settings.png" alt="The Settings screen with volume normalization, accent color and AI discovery options" width="860">
 </p>
 
-### Error Handling
-
-<p align="center">
-  <img src="assets/error.svg" alt="tunetape error" width="600">
-</p>
-
----
-
-## Controls
-
-### General
+## Keys you will actually use
 
 | Key | Action |
 |:---:|--------|
-| `space` | Play / Pause |
-| `-->` | Seek forward 10s |
-| `<--` | Seek backward 10s |
-| `.` | Seek forward 30s |
-| `,` | Seek backward 30s |
-| `↑` / `+` | Volume up |
-| `↓` / `-` | Volume down |
-| `m` | Mute / unmute |
-| `b` | Back to menu |
-| `q` | Quit |
-
-### Playlist Mode (Spotify · YouTube playlists · KHInsider)
-
-| Key | Action |
-|:---:|--------|
-| `n` | Next track |
-| `p` | Previous track |
-
-Tracks auto-advance when they finish.
-
-### Recently Played
-
-Open it from the main menu to re-listen to anything you've played before (albums resume where you left off):
-
-| Key | Action |
-|:---:|--------|
-| number | Play that entry |
-| `d <n>` | Delete entry *n* |
-| `c` | Clear all history |
+| `space` | Play / pause |
+| `←` `→` | Seek 10s |
+| `↑` `↓` | Volume |
+| `n` `p` | Next / previous track |
+| `m` | Mute |
+| `h` | Toggle the full help overlay |
 | `b` | Back |
 | `q` | Quit |
 
-> AI entries replay two ways: a played song re-plays that track, while a saved request (`· search`) re-runs discovery for a fresh list.
+The complete key reference for every screen is in the wiki: **[Usage and Controls](https://github.com/oauramos/tunetape/wiki/Usage-and-Controls)**.
 
-### Discover (AI)
+## Learn more
 
-Pick **Discover** from the main menu, type a request, then choose a suggestion:
+The **[wiki](https://github.com/oauramos/tunetape/wiki)** has the details this page leaves out:
 
-| Key | Action |
-|:---:|--------|
-| number | Play that suggestion |
-| `r` | New request |
-| `b` | Back |
-| `q` | Quit |
-
-> Requires an [Anthropic API key](https://console.anthropic.com) — set it in **Settings → AI discovery** or via `ANTHROPIC_API_KEY`. You can also point it at any Anthropic-compatible gateway (custom endpoint + x-api-key or Bearer auth) from the same screen.
-
----
+- [Installation](https://github.com/oauramos/tunetape/wiki/Installation): every install method, upgrading, uninstalling
+- [Usage and Controls](https://github.com/oauramos/tunetape/wiki/Usage-and-Controls): each screen and every key
+- [Sources](https://github.com/oauramos/tunetape/wiki/Sources): what links work and how each source is streamed
+- [AI Discovery](https://github.com/oauramos/tunetape/wiki/AI-Discovery): Anthropic, OpenAI-compatible endpoints and local models
+- [Settings](https://github.com/oauramos/tunetape/wiki/Settings): normalization, accent colors, where your data lives
+- [Troubleshooting](https://github.com/oauramos/tunetape/wiki/Troubleshooting): playback stalls, missing tools, the Debug screen
+- [FAQ](https://github.com/oauramos/tunetape/wiki/FAQ)
 
 ## Built with
 
-- [mpv](https://mpv.io/) — lightweight media player
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube audio extraction
-- [rich](https://github.com/Textualize/rich) — terminal UI rendering
-
----
-
-## Requirements
-
-- **macOS, Linux, or Windows** — the terminal UI and mpv IPC layer are cross-platform (Unix sockets on macOS/Linux, named pipes on Windows)
-- Python 3.9+
-- [mpv](https://mpv.io/) (always) and [yt-dlp](https://github.com/yt-dlp/yt-dlp) (for YouTube/Spotify) on your `PATH`
-
-> Listening history and settings live in `~/.local/share/tunetape/` on macOS/Linux and `%LOCALAPPDATA%\tunetape\` on Windows, and persist across upgrades.
-
----
-
-## Troubleshooting
-
-**A track loads but the timer sits at 0:00.** YouTube periodically changes which
-of its player clients hand out stream URLs that `mpv` can read. tunetape asks
-`yt-dlp` for a client that works, but if YouTube shifts again you can point it at
-a different one without waiting for a release:
-
-```bash
-TUNETAPE_YTDLP_CLIENT=tv_embedded tunetape
-```
-
-Any client list `yt-dlp` accepts for `youtube:player_client` works; entries are
-tried in order. Keeping `yt-dlp` current helps too — `brew upgrade yt-dlp`.
-
-Press `d` on the main menu to open **Debug / Logs**, which now shows what `mpv`
-reported when a stream fails to open.
-
----
+- [mpv](https://mpv.io/), the media player doing the actual playback
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp), which resolves YouTube streams
+- [rich](https://github.com/Textualize/rich), which draws the terminal UI
 
 ## License
 
-This project is free to use, modify, and distribute. See [MIT License](LICENSE) for details.
-
----
+MIT. See [LICENSE](LICENSE).
 
 ## Disclaimer
 
