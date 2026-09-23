@@ -121,11 +121,14 @@ def is_youtube_url(url: str) -> bool:
 # `Range: bytes=0-`, which those URLs reject with HTTP 403. mpv's output was
 # discarded at the time, so the only symptom was playback frozen at 0:00.
 #
-# The web_embedded client still returns plain, uncapped URLs that mpv streams
-# directly. tv_embedded and android_vr stay on as fallbacks for the occasional
-# video web_embedded has no formats for; web_embedded wins whenever it does.
+# In Sep 2026 web_embedded URLs started failing too: most of them 403 on every
+# request, ranged or not. The visionos client (yt-dlp's own default since
+# 2026.08) returns plain, uncapped URLs that mpv streams directly, so it goes
+# first. web_embedded stays as the fallback for older yt-dlp builds that don't
+# know visionos yet. tv_embedded is gone from yt-dlp and android_vr no longer
+# returns audio formats, so both were dropped.
 # See https://github.com/yt-dlp/yt-dlp/issues/12482
-_DEFAULT_YTDLP_CLIENTS = "web_embedded,tv_embedded,android_vr"
+_DEFAULT_YTDLP_CLIENTS = "visionos,web_embedded"
 
 # mpv echoes the whole stream URL in its load errors; keep log lines readable.
 _MPV_LOG_LINE_MAX = 200
