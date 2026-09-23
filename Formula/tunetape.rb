@@ -19,8 +19,8 @@ class Tunetape < Formula
 
   desc "Terminal audio player that streams from YouTube, Spotify, and KHInsider"
   homepage "https://github.com/oauramos/tunetape"
-  url "https://github.com/oauramos/tunetape/archive/refs/tags/v0.8.0.tar.gz"
-  sha256 "a57496eed0dc8b85c739f68acfc4d00ceb9aced3b220179693567f8ee66c10b0"
+  url "https://github.com/oauramos/tunetape/archive/refs/tags/v0.8.1.tar.gz"
+  sha256 "fca4f446bd35af3b8d77517660472e7f016f92c964041cb623528a874e146290"
   license "MIT"
 
   depends_on "mpv"          # links FFmpeg libraries — provides audio decode + dynaudnorm
