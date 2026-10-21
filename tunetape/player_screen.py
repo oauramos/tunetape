@@ -23,6 +23,8 @@ from tunetape.widgets import Cap, Graph, KeyCaps, LevelMeter, Marquee, TopBar
 POLL_SECONDS = 0.1
 STATE_EVERY = 3   # position aside, playback state every 0.3 s
 STATS_EVERY = 10  # stream stats every second
+# Narrower than this, the player's caps show just their keys (space, ← →, m…).
+KEYS_ONLY_BELOW = 96
 # The level graph spans a tighter range than the meter's bars, so the swells
 # of a song show as hills instead of a flat block.
 GRAPH_FLOOR = -36.0
@@ -170,7 +172,7 @@ class PlayerScreen(FlowScreen):
                         yield Static("00:00", id="elapsed")
                         yield ProgressBar(show_percentage=False, show_eta=False, id="progress")
                         yield Static("--:--", id="duration")
-                    yield KeyCaps(PLAYER_CAPS, id="player-caps")
+                    yield KeyCaps(PLAYER_CAPS, keys_only_below=KEYS_ONLY_BELOW, id="player-caps")
                 with Horizontal(id="stats"):
                     with Vertical(id="level", classes="box"):
                         yield LevelMeter(id="meter")

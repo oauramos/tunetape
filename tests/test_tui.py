@@ -286,6 +286,22 @@ def test_level_and_stream_panels_follow_the_controller():
     assert seen["samples"] >= 5
 
 
+@pytest.mark.parametrize("size, labels", [((96, 30), True), ((95, 30), False), ((60, 24), False)])
+def test_player_caps_drop_labels_below_96_columns(size, labels):
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(0.2)
+        seen["text"] = str(app.screen.query_one("#player-caps").render())
+
+    flow, _ = album_flow()
+    drive(flow, script, size)
+    assert " space " in seen["text"] and " q " in seen["text"]
+    assert ("play/pause" in seen["text"]) is labels
+    assert "vol" in seen["text"]  # the volume gauge stays as it is
+
+
 def test_long_titles_scroll_like_a_car_radio():
     long_title = "A Very Long Song Title That Will Never Fit In Sixty Columns (Remastered)"
     seen = []

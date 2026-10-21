@@ -367,7 +367,9 @@ class KeyCaps(Widget):
     left, and a ``tail`` (say, a volume gauge) sits at the right end of the
     last row. ``boxed`` caps are little boxes with the key in the top border
     instead, falling back to pills when the terminal is shorter than
-    ``flat_below`` rows. Clicking a cap runs its action; with ``navigable``
+    ``flat_below`` rows. On terminals narrower than ``keys_only_below``
+    columns the pills drop their labels and show just the key. Clicking a
+    cap runs its action; with ``navigable``
     the arrows move a cursor between caps and enter presses the one under it.
     ``None`` in ``caps`` starts a new row. Caps whose action the screen's
     ``check_action`` hides or disables are dropped or dimmed, so call
@@ -397,12 +399,14 @@ class KeyCaps(Widget):
             self.x = x
 
     def __init__(self, caps: list, *, navigable: bool = False, boxed: bool = False,
-                 flat_below: int = 0, align: str = "left", **kwargs):
+                 flat_below: int = 0, keys_only_below: int = 0, align: str = "left",
+                 **kwargs):
         super().__init__(**kwargs)
         self.caps = list(caps)
         self.can_focus = navigable
         self.boxed = boxed
         self.flat_below = flat_below
+        self.keys_only_below = keys_only_below
         self.align = align
         self.tail = None  # Content drawn after the last cap
         self._hits = []  # (x0, x1, y0, y1, index) of each cap drawn last
@@ -424,6 +428,10 @@ class KeyCaps(Widget):
         # height always changes with the style, so the caps repaint too.
         return not self.boxed or self.screen.size.height < self.flat_below
 
+    @property
+    def keys_only(self) -> bool:
+        return self.flat and self.screen.size.width < self.keys_only_below
+
     def _state(self, cap: Cap) -> Optional[bool]:
         """True to draw, None to draw disabled, False to leave out."""
         if cap.action is None:
@@ -441,6 +449,8 @@ class KeyCaps(Widget):
 
     def _cap_width(self, cap: Cap) -> int:
         key, label = cell_len(cap.key), cell_len(cap.label)
+        if self.keys_only:
+            return key + 2
         if self.flat:
             return key + label + 3
         return max(label + 4, key + 6)
@@ -456,15 +466,29 @@ class KeyCaps(Widget):
             state = self._state(cap)
             if state is not False:
                 segment.append((i, cap, state is True, self._cap_width(cap)))
-        if self.tail is not None:
-            # A wider gap before the tail sets it apart from the caps.
-            segment.append((TAIL, None, True, self.tail.cell_length + 2))
         segments.append(segment)
-        rows = []
-        for segment in filter(None, segments):
-            for row in balanced_rows([c[3] for c in segment], width):
-                rows.append([segment[j] for j in row])
-        return rows
+        segments = [seg for seg in segments if seg]
+
+        def balance(items: list) -> list:
+            return [[items[j] for j in row] for row in balanced_rows([c[3] for c in items], width)]
+
+        rows = [row for seg in segments[:-1] for row in balance(seg)]
+        last = segments[-1] if segments else []
+        if self.tail is None:
+            return rows + balance(last)
+        # A wider gap before the tail sets it apart from the caps. Either the
+        # caps keep their rows and the tail ends the last one (or takes a row
+        # of its own), or caps and tail are balanced together; the fewer rows
+        # win, and the caps staying together wins a tie.
+        tail = (TAIL, None, True, self.tail.cell_length + 2)
+        apart = balance(last)
+        used = sum(c[3] for c in apart[-1]) + GAP * len(apart[-1]) if apart else 0
+        if apart and used + tail[3] <= width:
+            apart[-1] = apart[-1] + [tail]
+        else:
+            apart.append([tail])
+        mixed = balance(last + [tail])
+        return rows + (apart if len(apart) <= len(mixed) else mixed)
 
     def get_content_width(self, container, viewport) -> int:
         # As wide as one row of everything, for auto-width parents (dialogs).
@@ -486,6 +510,8 @@ class KeyCaps(Widget):
     def _draw(self, cap: Cap, width: int, look: str) -> list:
         if self.flat:
             key_style, label_style, fill = _FLAT_LOOKS[look]
+            if self.keys_only:
+                return [Content.assemble((f" {cap.key} ", key_style + fill))]
             return [Content.assemble(
                 (f" {cap.key} ", key_style + fill), (f"{cap.label} ", label_style + fill),
             )]
