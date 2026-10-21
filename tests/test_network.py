@@ -17,6 +17,7 @@ pytestmark = pytest.mark.skipif(
     reason="set TUNETAPE_NETWORK_TESTS=1 to run live network tests",
 )
 
+from tunetape import khinsider
 from tunetape.player import MPVController, check_dependencies, get_stream_info
 
 URLS = [
@@ -41,3 +42,18 @@ def test_live_playback():
         assert controller.is_alive()
     finally:
         controller.quit()
+
+
+KHINSIDER_ALBUM = "https://downloads.khinsider.com/game-soundtracks/album/chrono-trigger-2015"
+
+
+@pytest.mark.parametrize("fetch", [khinsider._fetch_impersonating, khinsider._fetch_with_curl])
+def test_live_khinsider_gets_past_cloudflare(fetch, monkeypatch):
+    # Each browser-like fetcher on its own; urllib alone is turned away.
+    if fetch is khinsider._fetch_impersonating:
+        pytest.importorskip("curl_cffi")
+    monkeypatch.setattr(khinsider, "_FETCHERS", (fetch,))
+    album = khinsider.fetch_album(KHINSIDER_ALBUM)
+    assert album.tracks
+    assert khinsider.resolve_track_url(album.tracks[0]).startswith("http")
+
