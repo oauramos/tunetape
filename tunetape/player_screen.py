@@ -1,4 +1,4 @@
-"""The player: tuna + tape, tape counter, progress, volume, key caps and the queue.
+"""The player, btop style: now playing, live audio levels, stream stats, queue.
 
 ``PlayerScreen`` answers the strings the old Rich player returned ('menu',
 'quit', 'next_track', 'prev_track'), plus 'jump_track:<n>' when a track is
@@ -13,23 +13,33 @@ from textual.binding import Binding
 from textual.color import Gradient
 from textual.containers import Horizontal, Vertical
 from textual.content import Content
-from textual.widgets import Digits, OptionList, ProgressBar, Static
+from textual.widgets import OptionList, ProgressBar, Static
 from textual.worker import get_current_worker
 
 from tunetape.screens import FlowScreen, HelpModal
-from tunetape.widgets import Cap, KeyCaps, TopBar, Tuna
+from tunetape.widgets import Cap, Graph, KeyCaps, LevelMeter, TopBar
 
 VOLUME_STEPS = "▁▂▃▄▅▆▇█"
-POLL_SECONDS = 0.25
-# Below this many rows the key caps shrink to one line each, which leaves the
-# small tuna room on a 24-row terminal.
-FLAT_CAPS_BELOW = 28
+# The poll runs at the level meter's pace; the rest is read less often.
+POLL_SECONDS = 0.1
+STATE_EVERY = 3   # position aside, playback state every 0.3 s
+STATS_EVERY = 10  # stream stats every second
+# The level graph spans a tighter range than the meter's bars, so the swells
+# of a song show as hills instead of a flat block.
+GRAPH_FLOOR = -36.0
 
 
 def format_time(seconds: float) -> str:
     """Format seconds as mm:ss."""
     seconds = max(seconds, 0)
     return f"{int(seconds) // 60:02d}:{int(seconds) % 60:02d}"
+
+
+def format_bytes(count: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if count < 1024 or unit == "GB":
+            return f"{count:.0f} {unit}" if unit == "B" else f"{count:.1f} {unit}"
+        count /= 1024
 
 
 def volume_meter(volume: float, muted: bool) -> Content:
@@ -47,17 +57,52 @@ def volume_meter(volume: float, muted: bool) -> Content:
 
 def status_line(paused: bool) -> Content:
     if paused:
-        return Content.from_markup("[b $warning]❚❚  PAUSED[/]")
-    return Content.from_markup("[b $success]▶  PLAYING[/]")
+        return Content.from_markup("[b $warning]❚❚ paused[/]")
+    return Content.from_markup("[b $success]▶ playing[/]")
 
 
-def loading_line(message: str = "LOADING") -> Content:
-    return Content.from_markup("[$foreground 60%]…  $message[/]", message=message)
+def loading_line(message: str = "loading") -> Content:
+    return Content.from_markup("[$foreground 60%]… $message[/]", message=message)
+
+
+def stream_lines(stats: dict) -> Content:
+    """The stream panel's figures, one per line, unknowns as a dash."""
+
+    def known(*values) -> bool:
+        return all(v not in (None, "", 0) for v in values)
+
+    codec = stats.get("codec") or "—"
+    if known(stats.get("bitrate")):
+        codec += f" · {stats['bitrate'] / 1000:.0f} kb/s"
+    audio = "—"
+    if known(stats.get("samplerate")):
+        audio = f"{stats['samplerate'] / 1000:g} kHz"
+        if stats.get("channels"):
+            audio += f" · {stats['channels']}"
+    cache = "—"
+    if stats.get("ahead") is not None:
+        cache = f"{format_time(stats['ahead'])} ahead"
+        if known(stats.get("cached")):
+            cache += f" · {format_bytes(stats['cached'])}"
+    speed = stats.get("speed")
+    rows = [
+        ("codec", codec),
+        ("audio", audio),
+        ("file", stats.get("container") or "—"),
+        ("cache", cache),
+        ("net ↓", f"{format_bytes(speed)}/s" if speed is not None else "—"),
+        ("norm", "on" if stats.get("normalized") else "off"),
+    ]
+    return Content("\n").join(
+        Content.from_markup("[$foreground 60%]$label[/] [$primary]$value[/]",
+                            label=label.ljust(5), value=value)
+        for label, value in rows
+    )
 
 
 PLAYER_CAPS = [
     Cap("space", "play/pause", "toggle_pause"),
-    Cap("← →", "seek 10s"),
+    Cap("← →", "seek"),
     Cap("↑ ↓", "volume"),
     Cap("m", "mute", "mute"),
     Cap("p", "prev", "prev"),
@@ -69,7 +114,7 @@ PLAYER_CAPS = [
 
 
 class PlayerScreen(FlowScreen):
-    """Now playing, with the album's queue alongside on wide terminals."""
+    """Now playing with its controls, level and stream panels, and the queue."""
 
     AUTO_FOCUS = ""  # nothing: ↑/↓ stay on volume until tab focuses the queue
 
@@ -98,7 +143,7 @@ class PlayerScreen(FlowScreen):
         self.source = source
         self.subtitle = subtitle
         self.tracks = tracks or []
-        self._state = None  # the last poll, for click-to-seek
+        self._state = {}  # the latest poll, merged
 
     @property
     def current_index(self) -> int:
@@ -108,25 +153,29 @@ class PlayerScreen(FlowScreen):
 
     def compose(self):
         yield TopBar(right=self._source_badge())
-        with Horizontal(id="player-body", classes="" if self.tracks else "-solo"):
+        with Horizontal(id="player-body"):
             with Vertical(id="deck"):
-                yield Tuna()
-                with Horizontal(id="info"):
-                    with Vertical(id="titles"):
+                with Vertical(id="now", classes="box"):
+                    with Horizontal(id="now-top"):
                         yield Static(id="title")
-                        yield Static(id="subtitle")
-                        yield Static(id="track-no")
-                    with Vertical(id="counter-box"):
-                        yield Digits("00:00", id="counter")
-                        yield Static(id="duration")
-                yield ProgressBar(show_percentage=False, show_eta=False, id="progress")
-                with Horizontal(id="status-row"):
-                    # mpv takes a moment to open the stream before the first poll
-                    yield Static(loading_line(), id="status")
-                    yield Static(id="volume")
-                yield KeyCaps(PLAYER_CAPS, flat_below=FLAT_CAPS_BELOW, id="player-caps")
+                        yield Static(loading_line(), id="status")
+                    yield Static(id="subtitle")
+                    with Horizontal(id="time-row"):
+                        yield Static("00:00", id="elapsed")
+                        yield ProgressBar(show_percentage=False, show_eta=False, id="progress")
+                        yield Static("--:--", id="duration")
+                    yield KeyCaps(PLAYER_CAPS, flat_below=10_000, id="player-caps")
+                with Horizontal(id="stats"):
+                    with Vertical(id="level", classes="box"):
+                        yield LevelMeter(id="meter")
+                        yield Graph(maximum=1.0, tints=("$success", "$warning", "$error"),
+                                    id="level-graph")
+                        yield Static(id="volume")
+                    with Vertical(id="stream", classes="box"):
+                        yield Static(stream_lines({}), id="stream-info")
+                        yield Graph(tints=("$primary", "$accent"), id="net-graph")
             if self.tracks:
-                yield OptionList(*self._queue_rows(), id="queue")
+                yield OptionList(*self._queue_rows(), id="queue", classes="box")
 
     def _source_badge(self) -> Content:
         if not self.source:
@@ -147,17 +196,23 @@ class PlayerScreen(FlowScreen):
         return rows
 
     def on_mount(self) -> None:
-        self._w_counter = self.query_one("#counter", Digits)
+        self._w_elapsed = self.query_one("#elapsed", Static)
         self._w_duration = self.query_one("#duration", Static)
         self._w_progress = self.query_one("#progress", ProgressBar)
+        self._w_bar = self._w_progress.query_one("#bar")
         self._w_status = self.query_one("#status", Static)
         self._w_volume = self.query_one("#volume", Static)
-        self._w_tuna = self.query_one(Tuna)
+        self._w_meter = self.query_one("#meter", LevelMeter)
+        self._w_level_graph = self.query_one("#level-graph", Graph)
+        self._w_net_graph = self.query_one("#net-graph", Graph)
+        self._w_stream = self.query_one("#stream-info", Static)
         self._w_caps = self.query_one("#player-caps", KeyCaps)
-        self.query_one("#deck").border_title = "Now playing"
+        self.query_one("#now").border_title = "now playing"
+        self.query_one("#level").border_title = "level"
+        self.query_one("#stream").border_title = "stream"
         if self.tracks:
             queue = self.query_one("#queue", OptionList)
-            queue.border_title = "Queue"
+            queue.border_title = "queue"
             queue.border_subtitle = f"{len(self.tracks)} tracks"
         self._show_track()
         self.apply_gradient()
@@ -166,23 +221,24 @@ class PlayerScreen(FlowScreen):
     def _show_track(self) -> None:
         """Fill in everything that belongs to the current track."""
         self.query_one("#title", Static).update(Content(self.track_title))
-        subtitle = self.query_one("#subtitle", Static)
-        subtitle.update(Content(self.subtitle or ""))
-        subtitle.display = bool(self.subtitle)
+        details = [self.subtitle] if self.subtitle else []
         label = self.playlist_info.get("track_label")
-        track_no = self.query_one("#track-no", Static)
-        track_no.update(f"Track {label}" if label else "")
-        track_no.display = bool(label)
-        self._w_counter.update("00:00")
-        self._w_duration.update("")
+        if label:
+            details.append(f"track {label}")
+        subtitle = self.query_one("#subtitle", Static)
+        subtitle.update(Content(" · ".join(details)))
+        subtitle.display = bool(details)
+        self._w_elapsed.update("00:00")
+        self._w_duration.update("--:--")
         self._w_progress.update(total=None)
         self._w_status.update(loading_line())
-        self._w_tuna.playing = False
+        self.query_one("#level").border_subtitle = ""
         if self.tracks:
             queue = self.query_one("#queue", OptionList)
             queue.set_options(self._queue_rows())
             queue.highlighted = self.current_index
             queue.scroll_to_highlight(top=False)
+            queue.border_subtitle = f"{self.current_index + 1}/{len(self.tracks)}"
         self.refresh_bindings()
         self._w_caps.refresh(layout=True)
 
@@ -199,14 +255,14 @@ class PlayerScreen(FlowScreen):
         self.track_title = title
         self.playlist_info = playlist_info or {}
         self.controller = controller
-        self._state = None
+        self._state = {}
         self._show_track()
 
     def set_loading(self, message: str) -> None:
         """Show the flow fetching the next track (``ui.with_spinner``)."""
-        self._w_status.update(loading_line(message.rstrip("…")))
+        self._w_status.update(loading_line(message.rstrip("…").lower()))
         self._w_progress.update(total=None)
-        self._w_tuna.playing = False
+        self._w_meter.update_levels(None)
 
     def answer(self, result) -> None:
         # The flow quits this controller next; stop polling and steering it.
@@ -218,54 +274,73 @@ class PlayerScreen(FlowScreen):
     @work(thread=True, exclusive=True)
     def _poll(self) -> None:
         worker = get_current_worker()
+        tick = 0
         while not worker.is_cancelled:
             controller = self.controller
             if controller is not None:
-                state = self._read(controller)
+                state = self._read(controller, tick % STATE_EVERY == 0, tick % STATS_EVERY == 0)
                 try:
                     self.app.call_from_thread(self._apply, controller, state)
                 except RuntimeError:  # the app is shutting down
                     return
+            tick += 1
             time.sleep(POLL_SECONDS)
 
     @staticmethod
-    def _read(controller):
-        """The controller's state, 'ended' once mpv exits, or 'error'."""
+    def _read(controller, state: bool, stats: bool):
+        """A poll of the controller: 'ended' once mpv exits, 'error' if it fails."""
         try:
             if not controller.is_alive():
                 return "ended"
-            return {
-                "position": controller.get_position(),
-                "duration": controller.get_duration(),
-                "paused": controller.is_paused(),
-                "volume": controller.get_volume(),
-                "muted": controller.is_muted(),
-            }
+            read = {"position": controller.get_position()}
+            # Controllers without a level meter (or stream stats) just skip them.
+            if hasattr(controller, "get_levels"):
+                read["levels"] = controller.get_levels()
+            if state:
+                read.update(
+                    duration=controller.get_duration(),
+                    paused=controller.is_paused(),
+                    volume=controller.get_volume(),
+                    muted=controller.is_muted(),
+                )
+            if stats and hasattr(controller, "get_stats"):
+                read["stats"] = controller.get_stats()
+            return read
         except Exception:
             return "error"
 
-    def _apply(self, controller, state) -> None:
+    def _apply(self, controller, read) -> None:
         if controller is not self.controller:
             return  # a read of the previous track that landed late
-        if state == "ended":
+        if read == "ended":
             self.answer("next_track" if self.playlist_info.get("has_next") else "menu")
-        elif state == "error":
+            return
+        if read == "error":
             self.answer("menu")
-        else:
-            self._state = state
-            self._render_state(state)
-
-    def _render_state(self, s: dict) -> None:
-        self._w_counter.update(format_time(s["position"]))
-        self._w_duration.update(Content.from_markup("of $dur", dur=format_time(s["duration"])))
+            return
+        self._state.update(read)
+        s = self._state
+        paused = s.get("paused", False)
+        self._w_elapsed.update(format_time(s["position"]))
+        if "duration" in read:
+            self._w_duration.update(format_time(s["duration"]) if s["duration"] > 0 else "--:--")
+            self._w_status.update(status_line(paused))
+            self._w_volume.update(volume_meter(s["volume"], s["muted"]))
         # Unknown duration (live streams) → Textual's indeterminate pulse.
-        if s["duration"] > 0:
+        if s.get("duration", 0) > 0:
             self._w_progress.update(total=s["duration"], progress=s["position"])
-        else:
-            self._w_progress.update(total=None)
-        self._w_status.update(status_line(s["paused"]))
-        self._w_volume.update(volume_meter(s["volume"], s["muted"]))
-        self._w_tuna.playing = not s["paused"]
+            # The inner bar rounds its fill to its width, and one set before the
+            # first layout rounds to nothing; while the position stands still
+            # (paused) nothing would set it again, so hand it over each poll.
+            self._w_bar.percentage = self._w_progress.percentage
+        if "levels" in read:
+            levels = None if paused else read["levels"]
+            self._w_meter.update_levels(levels)
+            loudest = max((rms for rms, _ in levels or ()), default=float("-inf"))
+            self._w_level_graph.push(min(max(1 - loudest / GRAPH_FLOOR, 0.0), 1.0))
+        if "stats" in read:
+            self._w_stream.update(stream_lines(read["stats"]))
+            self._w_net_graph.push(read["stats"].get("speed") or 0)
 
     # --- actions ---------------------------------------------------------
 
@@ -338,7 +413,7 @@ class PlayerScreen(FlowScreen):
     def on_click(self, event) -> None:
         """Click the progress bar to seek there."""
         widget = self._under_mouse(event)
-        if widget is None or self._state is None or self._state["duration"] <= 0:
+        if widget is None or self._state.get("duration", 0) <= 0:
             return
         if not any(n.id == "progress" for n in widget.ancestors_with_self):
             return

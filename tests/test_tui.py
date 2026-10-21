@@ -10,7 +10,7 @@ import tunetape.__main__ as main
 from tunetape import config, ui
 from tunetape.demo import DEMO_ALBUM, DEMO_TRACKS, FakeController, playlist_info_for
 from tunetape.models import Track
-from tunetape.widgets import KeyCaps, Tuna, balanced_rows
+from tunetape.widgets import KeyCaps, LevelMeter, Tuna, balanced_rows, graph_rows
 
 NOTHING = object()
 
@@ -99,6 +99,23 @@ def test_balanced_rows_one_row_when_it_fits():
     assert balanced_rows([30], 10) == [[0]]  # too wide: alone, not lost
 
 
+def test_graph_rows_fill_braille_from_the_bottom():
+    # Four samples, two per cell; full scale is two rows of four dots.
+    assert graph_rows([0.0, 0.25, 0.5, 1.0], 2, 2, maximum=1.0) == [" ⢸", "⢠⣿"]
+    assert graph_rows([1.0], 3, 1, maximum=1.0) == ["  ⢸"]  # newest on the right
+    assert graph_rows([5.0, 10.0], 1, 1) == ["⣼"]  # scaled to the largest shown
+    assert graph_rows([], 0, 3) == []
+
+
+def test_level_meter_holds_peaks():
+    meter = LevelMeter()
+    meter.update_levels([(-10.0, -3.0), (-12.0, -6.0)])
+    meter.update_levels([(-30.0, -28.0), (-30.0, -28.0)])
+    assert meter._held == [-4.5, -7.5]  # falling back from the peak, not dropped
+    meter.update_levels(None)  # paused / loading: silence on both channels
+    assert [rms for rms, _ in meter._levels] == [float("-inf")] * 2
+
+
 # --- the player --------------------------------------------------------------
 
 def album_flow(index=11, controller=None, results=None):
@@ -120,7 +137,7 @@ def play_keys(names, index=11, size=(108, 30)):
 def test_counter_shows_position():
     def counter(app):
         try:
-            return str(app.screen.query_one("#counter").value)
+            return str(app.screen.query_one("#elapsed").render())
         except Exception:
             return None
 
@@ -214,26 +231,46 @@ def test_keys_work_at_60_columns(names, check):
     assert check(result, controller)
 
 
-@pytest.mark.parametrize("size, tuna, flat", [
-    ((108, 34), "large", False),
-    ((108, 30), "small", False),
-    ((60, 30), "small", False),
-    ((80, 24), "small", True),
-    ((60, 24), "small", True),
-    ((60, 20), "cassette", True),
+@pytest.mark.parametrize("size, queue", [
+    ((108, 30), True),
+    ((80, 24), False),
+    ((60, 24), False),
+    ((60, 20), False),
 ])
-def test_layout_follows_terminal_size(size, tuna, flat):
+def test_panels_fit_the_terminal(size, queue):
     seen = {}
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.pause(0.2)
-        seen["tuna"] = app.screen.query_one(Tuna).variant
-        seen["flat"] = app.screen.query_one(KeyCaps).flat
+        await pilot.pause(0.3)
+        screen = app.screen
+        for name in ("now", "level", "stream", "player-caps", "meter", "stream-info"):
+            region = screen.query_one(f"#{name}").region
+            seen[name] = region.height > 0 and region.right <= size[0] and region.bottom <= size[1]
+        seen["queue"] = screen.query_one("#queue").display
 
     flow, _ = album_flow()
     drive(flow, script, size)
-    assert seen == {"tuna": tuna, "flat": flat}
+    assert seen.pop("queue") is queue
+    assert all(seen.values()), seen
+
+
+def test_level_and_stream_panels_follow_the_controller():
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(1.3)  # a stats read lands once a second
+        screen = app.screen
+        seen["meter"] = str(screen.query_one("#meter").render())
+        seen["stream"] = str(screen.query_one("#stream-info").render())
+        seen["samples"] = len(screen.query_one("#level-graph")._samples)
+
+    flow, _ = album_flow(controller=FakeController(187, 41))
+    drive(flow, script)
+    assert seen["meter"].startswith("L ") and "\nR " in seen["meter"]
+    assert "opus · 131 kb/s" in seen["stream"] and "48 kHz · stereo" in seen["stream"]
+    assert seen["samples"] >= 5
 
 
 def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
@@ -241,8 +278,8 @@ def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot._post_mouse_events([events.MouseScrollUp], "#counter")
-        await pilot._post_mouse_events([events.MouseScrollUp], "#counter")
+        await pilot._post_mouse_events([events.MouseScrollUp], "#level-graph")
+        await pilot._post_mouse_events([events.MouseScrollUp], "#elapsed")
         await pilot._post_mouse_events([events.MouseScrollDown], "#title")
         await pilot._post_mouse_events([events.MouseScrollDown], "#queue")
         await pilot.pause(0.1)
@@ -260,7 +297,7 @@ def test_clicking_caps_and_the_bar():
         caps = app.screen.query_one(KeyCaps)
         for x0, x1, y0, y1, index in caps._hits:
             if caps.caps[index].label == "mute":
-                await pilot.click(KeyCaps, offset=(x0 + 2, y0 + 1))
+                await pilot.click("#player-caps", offset=(x0 + 1, y0))
         await pilot.click("#progress Bar", offset=(0, 0))  # the very start
         await pilot.pause(0.1)
 

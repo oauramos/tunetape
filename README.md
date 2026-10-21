@@ -93,10 +93,10 @@ Press **1** on the main menu and paste a YouTube, Spotify or KHInsider URL. tune
 
 ### 2. It plays
 
-The stream opens in mpv and you get a player with a tape counter, progress bar, volume meter and one-key controls. The buttons are clickable, the mouse wheel sets the volume and a click on the bar seeks.
+The stream opens in mpv and you get a btop-style player: the track and its controls up top, a live L/R level meter with a loudness graph, and the stream's vitals (codec, bitrate, sample rate, cache, download speed). The buttons are clickable, the mouse wheel sets the volume and a click on the bar seeks.
 
 <p align="center">
-  <img src="assets/player.png" alt="The player screen: the tuna mascot carrying a cassette, the tape counter, a progress bar, the volume meter and boxed key controls" width="860">
+  <img src="assets/player.png" alt="The player screen: now playing with a progress bar and key controls, a live level meter and graph, and stream stats" width="860">
 </p>
 
 ### 3. Playlists just work

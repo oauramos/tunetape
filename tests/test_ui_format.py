@@ -27,3 +27,18 @@ def test_humanize_time():
     assert _humanize_time((now - timedelta(minutes=5)).isoformat()) == "5m ago"
     assert _humanize_time((now - timedelta(hours=3)).isoformat()) == "3h ago"
     assert _humanize_time((now - timedelta(days=2)).isoformat()) == "2d ago"
+
+
+def test_stream_lines():
+    from tunetape.player_screen import stream_lines
+
+    text = stream_lines({
+        "codec": "opus", "bitrate": 124336, "samplerate": 48000, "channels": "stereo",
+        "container": "mkv", "ahead": 207.7, "cached": 9232848, "speed": 1536,
+        "normalized": True,
+    }).plain
+    assert "codec opus · 124 kb/s" in text
+    assert "audio 48 kHz · stereo" in text
+    assert "cache 03:27 ahead · 8.8 MB" in text
+    assert "net ↓ 1.5 KB/s" in text and "norm  on" in text
+    assert stream_lines({}).plain.count("—") == 5  # nothing known yet

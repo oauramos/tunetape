@@ -1,5 +1,6 @@
 """Widgets shared by every tunetape screen: the mascot, the key caps, the top bar."""
 
+from collections import deque
 from typing import NamedTuple, Optional
 
 from rich.cells import cell_len
@@ -91,6 +92,138 @@ class AsciiTuna(Widget):
 
     def render(self) -> Content:
         return ascii_tuna(self.frame)
+
+
+# Braille dots filled from the bottom up: left column, right column.
+_LEFT_DOTS = (0x40, 0x04, 0x02, 0x01)
+_RIGHT_DOTS = (0x80, 0x20, 0x10, 0x08)
+
+
+def _braille(left: int, right: int) -> str:
+    """A braille cell with ``left``/``right`` (0-4) dots lit from the bottom."""
+    if not (left or right):
+        return " "
+    bits = sum(_LEFT_DOTS[:left]) + sum(_RIGHT_DOTS[:right])
+    return chr(0x2800 + bits)
+
+
+class Graph(Widget):
+    """A btop-style scrolling area graph in braille, newest sample on the right.
+
+    Each cell holds two samples side by side and four levels of height, and
+    the rows are tinted along ``tints`` from the bottom up. Values are
+    plotted against ``maximum``, or against the largest one on screen.
+    """
+
+    DEFAULT_CSS = """
+    Graph { width: 1fr; height: 1fr; }
+    """
+
+    def __init__(self, *, maximum: float = None, tints=("$primary",), **kwargs):
+        super().__init__(**kwargs)
+        self.maximum = maximum
+        self.tints = tints
+        self._samples = deque(maxlen=1024)
+
+    def push(self, value: float) -> None:
+        self._samples.append(max(float(value), 0.0))
+        self.refresh()
+
+    def render(self) -> Content:
+        width, height = self.content_size
+        rows = graph_rows(list(self._samples), width, height, self.maximum)
+        lines = []
+        for row, text in enumerate(rows):
+            tint = self.tints[min((height - 1 - row) * len(self.tints) // height,
+                                  len(self.tints) - 1)]
+            lines.append(Content.styled(text, tint))
+        return Content("\n").join(lines)
+
+
+def graph_rows(samples: list, width: int, height: int, maximum: float = None) -> list:
+    """Rows of braille (top first) plotting the last ``2 * width`` samples."""
+    if width <= 0 or height <= 0:
+        return []
+    shown = samples[-2 * width:]
+    top = maximum or max(shown, default=0.0) or 1.0
+    dots = [0] * (2 * width - len(shown)) + [
+        round(min(value / top, 1.0) * height * 4) for value in shown
+    ]
+    rows = []
+    for row in range(height):
+        floor = (height - 1 - row) * 4  # dots below this row
+        rows.append("".join(
+            _braille(min(max(dots[2 * c] - floor, 0), 4), min(max(dots[2 * c + 1] - floor, 0), 4))
+            for c in range(width)
+        ))
+    return rows
+
+
+METER_FLOOR = -50.0  # dBFS at the left end of a level bar
+_EIGHTHS = " ▏▎▍▌▋▊▉"
+
+
+def _level_fraction(db: float) -> float:
+    return min(max((db - METER_FLOOR) / -METER_FLOOR, 0.0), 1.0)
+
+
+class LevelMeter(Widget):
+    """Per-channel level bars, btop-meter style: RMS as a green → red bar,
+    the recent peak as a tick that falls back slowly, and the dB figure."""
+
+    DEFAULT_CSS = """
+    LevelMeter { width: 1fr; height: auto; }
+    """
+
+    NAMES = {0: "L", 1: "R"}
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._levels = []  # (rms, peak) per channel
+        self._held = []    # peak tick per channel
+
+    def update_levels(self, levels) -> None:
+        """New (rms, peak) dBFS per channel; None or [] means silence."""
+        silence = (float("-inf"), float("-inf"))
+        levels = list(levels or [silence] * (len(self._levels) or 2))
+        held = []
+        for i, (_, peak) in enumerate(levels):
+            previous = self._held[i] if i < len(self._held) else METER_FLOOR
+            held.append(max(peak, previous - 1.5))  # hold, then fall 1.5 dB a frame
+        relayout = len(levels) != len(self._levels)
+        self._levels, self._held = levels, held
+        self.refresh(layout=relayout)
+
+    def get_content_height(self, container, viewport, width: int) -> int:
+        return len(self._levels) or 2
+
+    def render(self) -> Content:
+        width = self.content_size.width
+        bar = max(width - 8, 1)  # "L " + bar + " -12.3"
+        lines = []
+        levels = self._levels or [(float("-inf"), float("-inf"))] * 2
+        names = {0: "M"} if len(levels) == 1 else self.NAMES
+        for i, (rms, _) in enumerate(levels):
+            cells = _level_fraction(rms) * bar
+            full, part = int(cells), int((cells - int(cells)) * 8)
+            tick = min(int(_level_fraction(self._held[i]) * bar), bar - 1) if i < len(self._held) else -1
+            parts = [(f"{names.get(i, str(i + 1))} ", "$foreground 60%")]
+            for x in range(bar):
+                if x < full:
+                    char = "█"
+                elif x == full and part:
+                    char = _EIGHTHS[part]
+                elif x == tick and tick > full:
+                    char = "▕"
+                else:
+                    char = "·"
+                at = x / bar
+                color = "$success" if at < 0.6 else "$warning" if at < 0.85 else "$error"
+                parts.append((char, color if char != "·" else "$foreground 15%"))
+            figure = f"{rms:>5.1f}" if rms > METER_FLOOR else "  -∞ "
+            parts.append((f" {figure}", "$foreground 60%"))
+            lines.append(Content.assemble(*parts))
+        return Content("\n").join(lines)
 
 
 class Cap(NamedTuple):

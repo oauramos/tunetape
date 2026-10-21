@@ -103,43 +103,40 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
 #log { scrollbar-size-vertical: 1; }
 
 /* --- player ------------------------------------------------------------ */
-#player-body { height: 1fr; padding: 1 2 0 2; }
-#player-body.-solo { align-horizontal: center; }
-#deck {
-    width: 1fr;
-    max-width: 84;
-    height: 100%;
-    padding: 0 2;
-    align: center middle;
-    border: round $primary 50%;
+/* btop-like: square-ish boxes edge to edge, titles in the borders. */
+.box {
+    border: round $primary 40%;
     border-title-color: $primary;
     border-title-style: bold;
+    border-subtitle-color: $text-muted;
+    padding: 0 1;
+    background: $background;
 }
-#info { height: auto; }
-#titles { width: 1fr; height: 4; align-vertical: middle; }
-#counter-box { width: 17; height: auto; }
-#counter { width: 100%; text-align: right; color: $primary; }
-#duration { width: 100%; text-align: right; color: $text-muted; }
-#title { text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
+#player-body { height: 1fr; padding: 0 1; }
+#deck { width: 1fr; height: 100%; }
+#now { height: auto; }
+#now-top, #time-row { height: 1; }
+#title { width: 1fr; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
+#status { width: auto; padding-left: 2; }
 #subtitle { color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
-#track-no { color: $text-muted; }
-#progress { width: 100%; margin-top: 1; }
+#time-row { margin-top: 1; }
+#elapsed { width: auto; color: $primary; }
+#duration { width: auto; color: $text-muted; }
+#progress { width: 1fr; padding: 0 1; }
 #progress Bar { width: 1fr; }
 #progress Bar > .bar--bar { color: $primary; background: $panel; }
 #progress Bar > .bar--complete { color: $primary; background: $panel; }
 #progress Bar > .bar--indeterminate { color: $primary; background: $panel; }
-#status-row { height: 1; }
-#status { width: 1fr; }
-#volume { width: auto; }
 #player-caps { margin-top: 1; }
+#stats { height: 1fr; }
+#level, #stream { width: 1fr; height: 100%; }
+#level-graph, #net-graph { margin-top: 1; }
+#volume { height: 1; }
 #queue {
     width: 40;
     height: 100%;
-    margin-left: 2;
-    background: $background;
-    border: round $primary 25%;
-    border-title-color: $text-muted;
-    border-subtitle-color: $text-muted;
+    margin-left: 1;
+    padding: 0;
     scrollbar-size-vertical: 1;
     scrollbar-color: $primary 30%;
     scrollbar-color-hover: $primary 60%;
@@ -148,10 +145,9 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
     text-wrap: nowrap;
     text-overflow: ellipsis;
 }
-#queue:focus { border: round $primary; border-title-color: $primary; }
+#queue:focus { border: round $primary; }
 PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
-PlayerScreen.-compact #player-body { padding: 1 1 0 1; }
-PlayerScreen.-compact #deck { padding: 0 1; }
+PlayerScreen.-compact #player-body { padding: 0; }
 """
 
 

@@ -7,6 +7,8 @@ The tests and the README screenshots use the same fakes.
 """
 
 import argparse
+import math
+import random
 import time
 
 from tunetape import ui
@@ -64,6 +66,27 @@ class FakeController:
     def is_alive(self) -> bool:
         self._tick()
         return self._position < self._duration
+
+    def get_levels(self):
+        """Something music-shaped for the level meter: a swell plus jitter."""
+        if self._paused:
+            return None
+        t = time.monotonic()
+        levels = []
+        for channel in range(2):
+            rms = -16 + 5 * math.sin(t * 1.7 + channel) + random.uniform(-3, 3)
+            levels.append((rms, rms + random.uniform(3, 8)))
+        return levels
+
+    def get_stats(self) -> dict:
+        t = time.monotonic()
+        return {
+            "codec": "opus", "bitrate": 131_000, "samplerate": 48000, "channels": "stereo",
+            "container": "webm", "ahead": 96.4, "cached": 3_480_000,
+            # A download that comes in bursts, like a stream topping up its cache.
+            "speed": max(0.0, 900_000 * math.sin(t / 2.0)) + random.uniform(0, 60_000),
+            "normalized": True,
+        }
 
     def quit(self):
         pass
