@@ -15,6 +15,16 @@ def test_tuna_art_sizes_match_their_render():
         assert {len(line) for line in lines} == {drawing.width}, name
 
 
+def test_ascii_tuna_keeps_its_shape_with_the_title():
+    lines = art.ascii_tuna(4).plain.split("\n")
+    assert len(lines) == art.ASCII_HEIGHT
+    assert {len(line) for line in lines} == {art.ASCII_WIDTH}
+    assert "Welcome to TuneTape" in lines[7]
+    # Outside the label window the art is untouched.
+    assert lines[7][:28] == art.ASCII_LINES[7][:28]
+    assert lines[7][61:].rstrip() == art.ASCII_LINES[7][61:].rstrip()
+
+
 def test_reels_turn_between_frames():
     tuna = art.TUNA_ART["small"]
     assert tuna.render(0).plain != tuna.render(1).plain

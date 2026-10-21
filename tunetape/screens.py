@@ -15,7 +15,8 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, OptionList, Static
 
 from tunetape import __version__
-from tunetape.widgets import Cap, KeyCaps, TopBar, Tuna
+from tunetape.art import ASCII_HEIGHT, ASCII_WIDTH
+from tunetape.widgets import AsciiTuna, Cap, KeyCaps, TopBar, Tuna
 
 QUIT = Cap("q", "quit", "app.quit_session")
 BACK = Cap("esc", "back", "back")
@@ -68,9 +69,17 @@ MENU_CAPS = [
 
 
 class MenuScreen(FlowScreen):
-    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'h', 'd' or 'q'."""
+    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'h', 'd' or 'q'.
+
+    With room for it (the art, the top bar and two rows of boxed caps) the
+    welcome is the original ASCII tuna with the title inside; smaller
+    terminals get the pixel tuna and the title underneath.
+    """
 
     QUIT_RESULT = "q"
+    # ui.CSS shows the ASCII tuna only when both classes below say it fits.
+    HORIZONTAL_BREAKPOINTS = [(0, "-pixel-width"), (ASCII_WIDTH + 4, "-ascii-width")]
+    VERTICAL_BREAKPOINTS = [(0, "-pixel-height"), (1 + ASCII_HEIGHT + 6, "-ascii-height")]
     BINDINGS = [
         Binding("1", "pick('1')", show=False),
         Binding("2", "pick('2')", show=False),
@@ -85,9 +94,10 @@ class MenuScreen(FlowScreen):
         version = Content.from_markup("[$foreground 50%]v$v[/]", v=__version__)
         yield TopBar(right=version)
         with Vertical(id="home"):
+            yield AsciiTuna(id="ascii-tuna")
             yield Tuna(shine=True)
             yield Static(Content.from_markup(
-                "[b $primary]Welcome to tunetape[/]\n[$foreground 60%]Terminal player by @oauramos[/]"
+                "[b $primary]Welcome to TuneTape[/]\n[$foreground 60%]Terminal Player by @oauramos[/]"
             ), id="welcome")
             yield KeyCaps(MENU_CAPS, navigable=True, flat_below=22, id="menu-caps")
 

@@ -11,7 +11,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
 
-from tunetape.art import TUNA_ART
+from tunetape.art import TUNA_ART, ascii_tuna
 
 
 class Tuna(Widget):
@@ -71,6 +71,26 @@ class Tuna(Widget):
             period = art.width + 2 * art.height + 60
             shine = (self.frame * 2) % period - 2 * art.height
         return art.render(self._reel, shine)
+
+
+class AsciiTuna(Widget):
+    """The original hand-drawn tuna, with a shine sweeping across it."""
+
+    DEFAULT_CSS = """
+    AsciiTuna { width: 1fr; height: auto; content-align: center top; }
+    """
+
+    frame = reactive(0)
+
+    def on_mount(self) -> None:
+        self.set_interval(1 / 15, self._advance)
+
+    def _advance(self) -> None:
+        if self.display:
+            self.frame += 1
+
+    def render(self) -> Content:
+        return ascii_tuna(self.frame)
 
 
 class Cap(NamedTuple):

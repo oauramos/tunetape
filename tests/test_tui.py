@@ -355,6 +355,22 @@ def test_menu(names, result):
     assert drive(ui.main_menu, keys(*names, wait_for="MenuScreen"))[0] == result
 
 
+@pytest.mark.parametrize("size, ascii", [((108, 30), True), ((85, 30), True),
+                                         ((108, 29), False), ((60, 24), False)])
+def test_menu_shows_the_ascii_tuna_when_it_fits(size, ascii):
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.pause(0.1)
+        seen["ascii"] = app.screen.query_one("#ascii-tuna").display
+        seen["pixel"] = app.screen.query_one(Tuna).display
+        seen["welcome"] = app.screen.query_one("#welcome").display
+
+    drive(ui.main_menu, script, size)
+    assert seen == {"ascii": ascii, "pixel": not ascii, "welcome": not ascii}
+
+
 def test_menu_click():
     async def script(pilot, app):
         await until(pilot, on(app, "MenuScreen"))
