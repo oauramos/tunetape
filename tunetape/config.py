@@ -1,6 +1,6 @@
 """Persistent user settings (stored alongside listening history).
 
-Holds the volume-normalization toggle, accent color, and the last
+Holds the volume-normalization toggle, the theme, and the last
 playback volume. Reads/writes are best-effort and corruption-safe: a bad
 or missing file falls back to defaults rather than crashing startup.
 """
@@ -17,8 +17,9 @@ _DEFAULTS = {
     # The user asked for even volume across sources, so normalization is on
     # by default; toggle it from the Settings menu.
     "normalize_volume": True,
-    # Accent color for the whole interface; change it in Settings → Accent color.
-    "accent_color": "cyan",
+    # Textual theme for the whole interface; change it in Settings → Theme
+    # (or the ctrl+p palette). Unknown names fall back to "tunetape".
+    "theme": "tunetape",
     # Last playback volume (percent), restored on the next launch.
     "volume": 100,
     # AI discovery (Settings → AI discovery). Empty key keeps the feature off;

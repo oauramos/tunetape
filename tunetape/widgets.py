@@ -1,0 +1,360 @@
+"""Widgets shared by every tunetape screen: the mascot, the key caps, the top bar."""
+
+from typing import NamedTuple, Optional
+
+from rich.cells import cell_len
+from textual import actions
+from textual.binding import Binding
+from textual.containers import Horizontal
+from textual.content import Content
+from textual.reactive import reactive
+from textual.widget import Widget
+from textual.widgets import Static
+
+from tunetape.art import TUNA_ART
+
+
+class Tuna(Widget):
+    """The tunetape mascot: a tuna carrying a cassette.
+
+    It takes whatever height its parent leaves (up to the large tuna plus a
+    blank row) and draws the biggest tuna that fits, down to a bare cassette,
+    so screens never have to pick a size per breakpoint. ``playing`` spins the
+    reels; ``shine`` sweeps a glint across the fish now and then.
+    """
+
+    DEFAULT_CSS = """
+    Tuna {
+        width: 1fr;
+        height: 1fr;
+        max-height: 14;
+        padding-bottom: 1;
+        content-align: center middle;
+    }
+    """
+
+    playing = reactive(False)
+    frame = reactive(0)
+
+    def __init__(self, *, playing: bool = False, shine: bool = False, **kwargs):
+        super().__init__(**kwargs)
+        self.set_reactive(Tuna.playing, playing)
+        self.shine = shine
+        self._reel = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(0.15, self._advance)
+
+    def _advance(self) -> None:
+        if self.playing:
+            self._reel += 1
+        if self.playing or self.shine:
+            self.frame += 1
+
+    @property
+    def variant(self) -> Optional[str]:
+        """'large', 'small', 'cassette' or None: what fits the space it was given."""
+        width, height = self.content_size
+        for name, art in TUNA_ART.items():
+            if width >= art.width and height >= art.height:
+                return name
+        return None
+
+    def render(self) -> Content:
+        name = self.variant
+        if name is None:
+            return Content("")
+        art = TUNA_ART[name]
+        shine = None
+        if self.shine:
+            # Sweep across the fish (the band leans two columns per row), then rest.
+            period = art.width + 2 * art.height + 60
+            shine = (self.frame * 2) % period - 2 * art.height
+        return art.render(self._reel, shine)
+
+
+class Cap(NamedTuple):
+    """One key cap: the key it shows, its label, and the action a click runs.
+
+    ``action`` is run on the screen (or ``app.<name>``); a cap without one is a
+    hint, like "← → seek", whose keys have no single thing to click.
+    """
+
+    key: str
+    label: str
+    action: Optional[str] = None
+
+
+GAP = 1  # columns between caps
+
+
+def balanced_rows(widths: list, available: int, gap: int = GAP) -> list:
+    """Split caps into as few rows as fit ``available``, with the rows as even as possible.
+
+    Returns lists of indices into ``widths``. A cap wider than the space gets a
+    row to itself.
+    """
+
+    def greedy(limit: int) -> list:
+        rows, row, used = [], [], 0
+        for i, width in enumerate(widths):
+            need = width if not row else used + gap + width
+            if row and need > limit:
+                rows.append(row)
+                row, used = [i], width
+            else:
+                row.append(i)
+                used = need
+        if row:
+            rows.append(row)
+        return rows
+
+    if not widths:
+        return []
+    count = len(greedy(available))
+    # The narrowest limit that still needs no more rows than the space allows.
+    low, high = max(widths), max(available, max(widths))
+    while low < high:
+        mid = (low + high) // 2
+        if len(greedy(mid)) <= count:
+            high = mid
+        else:
+            low = mid + 1
+    return greedy(low)
+
+
+# (border, key, label, fill) per look; fill is the background inside a cap.
+_BOXED_LOOKS = {
+    "normal": ("$primary 45%", "b $accent", "$foreground", ""),
+    "hot": ("$primary", "b $accent", "b $primary", " on $primary 12%"),
+    "disabled": ("$foreground 15%", "$foreground 30%", "$foreground 30%", ""),
+}
+_FLAT_LOOKS = {
+    "normal": ("b $accent", "$foreground 80%", " on $panel"),
+    "hot": ("b $accent", "b $primary", " on $primary 25%"),
+    "disabled": ("$foreground 30%", "$foreground 30%", " on $panel"),
+}
+
+
+class KeyCaps(Widget):
+    """A block of key caps, laid out in centred rows that wrap evenly.
+
+    Each cap is a little box with its key in the top border and a label inside,
+    or a one-line pill when the terminal is shorter than ``flat_below`` rows.
+    Clicking a cap runs
+    its action; with ``navigable`` the arrows move a cursor between caps and
+    enter presses the one under it. ``None`` in ``caps`` starts a new row.
+    Caps whose action the screen's ``check_action`` hides or disables are
+    dropped or dimmed, so call ``refresh(layout=True)`` when that changes.
+    """
+
+    DEFAULT_CSS = """
+    KeyCaps { width: 1fr; height: auto; }
+    """
+
+    BINDINGS = [
+        Binding("left", "move(-1)", show=False),
+        Binding("right", "move(1)", show=False),
+        Binding("up", "move_row(-1)", show=False),
+        Binding("down", "move_row(1)", show=False),
+        Binding("enter", "press", show=False),
+    ]
+
+    cursor = reactive(-1)
+    hover = reactive(-1)
+
+    def __init__(self, caps: list, *, navigable: bool = False, flat_below: int = 20, **kwargs):
+        super().__init__(**kwargs)
+        self.caps = list(caps)
+        self.can_focus = navigable
+        self.flat_below = flat_below
+        self._hits = []  # (x0, x1, y0, y1, index) of each cap drawn last
+
+    def on_mount(self) -> None:
+        if self.can_focus:
+            self.cursor = next(iter(self._pressable()), -1)
+
+    # --- state and layout --------------------------------------------------
+
+    @property
+    def flat(self) -> bool:
+        # Read at layout time: a resize lays the screen out again, and the
+        # height always changes with the style, so the caps repaint too.
+        return self.screen.size.height < self.flat_below
+
+    def _state(self, cap: Cap) -> Optional[bool]:
+        """True to draw, None to draw disabled, False to leave out."""
+        if cap.action is None:
+            return True
+        namespace, name, params = actions.parse(cap.action)
+        if namespace:
+            return True
+        return self.screen.check_action(name, params)
+
+    def _pressable(self) -> list:
+        return [
+            i for i, cap in enumerate(self.caps)
+            if cap is not None and cap.action and self._state(cap) is True
+        ]
+
+    def _cap_width(self, cap: Cap) -> int:
+        key, label = cell_len(cap.key), cell_len(cap.label)
+        if self.flat:
+            return key + label + 3
+        return max(label + 4, key + 6)
+
+    def _layout(self, width: int) -> list:
+        """Rows of (index, cap, enabled, width) that fit ``width`` columns."""
+        segments, segment = [], []
+        for i, cap in enumerate(self.caps):
+            if cap is None:
+                segments.append(segment)
+                segment = []
+                continue
+            state = self._state(cap)
+            if state is not False:
+                segment.append((i, cap, state is True, self._cap_width(cap)))
+        segments.append(segment)
+        rows = []
+        for segment in filter(None, segments):
+            for row in balanced_rows([c[3] for c in segment], width):
+                rows.append([segment[j] for j in row])
+        return rows
+
+    def get_content_height(self, container, viewport, width: int) -> int:
+        return len(self._layout(width)) * (1 if self.flat else 3)
+
+    # --- drawing -----------------------------------------------------------
+
+    def _look(self, index: int, cap: Cap, enabled: bool) -> str:
+        if not enabled:
+            return "disabled"
+        if cap.action and (index == self.hover or (self.has_focus and index == self.cursor)):
+            return "hot"
+        return "normal"
+
+    def _draw(self, cap: Cap, width: int, look: str) -> list:
+        if self.flat:
+            key_style, label_style, fill = _FLAT_LOOKS[look]
+            return [Content.assemble(
+                (f" {cap.key} ", key_style + fill), (f"{cap.label} ", label_style + fill),
+            )]
+        border, key_style, label_style, fill = _BOXED_LOOKS[look]
+        inner = width - 2
+        title = f" {cap.key} "
+        left = (inner - cell_len(title)) // 2
+        right = inner - left - cell_len(title)
+        pad = (inner - cell_len(cap.label)) // 2
+        label = " " * pad + cap.label + " " * (inner - pad - cell_len(cap.label))
+        return [
+            Content.assemble(("╭" + "─" * left, border), (title, key_style),
+                             ("─" * right + "╮", border)),
+            Content.assemble(("│", border), (label, label_style + fill), ("│", border)),
+            Content.assemble(("╰" + "─" * inner + "╯", border)),
+        ]
+
+    def render(self) -> Content:
+        width = self.size.width
+        height = 1 if self.flat else 3
+        lines, hits = [], []
+        for r, row in enumerate(self._layout(width)):
+            used = sum(c[3] for c in row) + GAP * (len(row) - 1)
+            x = max(0, (width - used) // 2)
+            parts = [[" " * x] for _ in range(height)]
+            for n, (index, cap, enabled, cap_width) in enumerate(row):
+                if n:
+                    for part in parts:
+                        part.append(" " * GAP)
+                hits.append((x, x + cap_width, r * height, (r + 1) * height, index))
+                for part, piece in zip(parts, self._draw(cap, cap_width, self._look(index, cap, enabled))):
+                    part.append(piece)
+                x += cap_width + GAP
+            lines.extend(Content.assemble(*part) for part in parts)
+        self._hits = hits
+        return Content("\n").join(lines)
+
+    # --- mouse and keys ----------------------------------------------------
+
+    def _cap_at(self, x: int, y: int) -> int:
+        for x0, x1, y0, y1, index in self._hits:
+            if x0 <= x < x1 and y0 <= y < y1:
+                return index
+        return -1
+
+    def on_mouse_move(self, event) -> None:
+        index = self._cap_at(event.x, event.y)
+        self.hover = index if index in self._pressable() else -1
+
+    def on_leave(self, event) -> None:
+        self.hover = -1
+
+    async def on_click(self, event) -> None:
+        index = self._cap_at(event.x, event.y)
+        if index >= 0:
+            event.stop()
+            await self.press(index)
+
+    async def press(self, index: int) -> None:
+        cap = self.caps[index]
+        if cap is not None and cap.action and self._state(cap) is True:
+            await self.screen.run_action(cap.action)
+
+    def on_focus(self) -> None:
+        self.refresh()
+
+    def on_blur(self) -> None:
+        self.refresh()
+
+    def action_move(self, step: int) -> None:
+        order = [h[4] for h in self._hits if h[4] in self._pressable()]
+        if order:
+            at = order.index(self.cursor) if self.cursor in order else 0
+            self.cursor = order[(at + step) % len(order)]
+
+    def action_move_row(self, step: int) -> None:
+        """Up/down: the nearest cap in the row above or below."""
+        boxes = {h[4]: h for h in self._hits if h[4] in self._pressable()}
+        here = boxes.get(self.cursor)
+        if here is None:
+            return
+        rows = sorted({box[2] for box in boxes.values()})
+        target = rows.index(here[2]) + step
+        if not 0 <= target < len(rows):
+            return
+        centre = (here[0] + here[1]) / 2
+        candidates = [box for box in boxes.values() if box[2] == rows[target]]
+        self.cursor = min(candidates, key=lambda box: abs((box[0] + box[1]) / 2 - centre))[4]
+
+    async def action_press(self) -> None:
+        if self.cursor >= 0:
+            await self.press(self.cursor)
+
+
+class TopBar(Horizontal):
+    """One-line bar across the top: the brand, where you are, and a note on the right."""
+
+    DEFAULT_CSS = """
+    TopBar { height: 1; padding: 0 2; background: $panel; }
+    TopBar > #brand { width: auto; }
+    TopBar > #crumb {
+        width: 1fr;
+        padding-left: 2;
+        color: $text-muted;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
+    TopBar > #right { width: auto; padding-left: 1; }
+    """
+
+    def __init__(self, crumb: str = "Terminal Audio Player", right=None, **kwargs):
+        super().__init__(**kwargs)
+        self._crumb = crumb
+        self._right = right
+
+    def compose(self):
+        yield Static(Content.from_markup("[b $primary]◉ tunetape[/]"), id="brand")
+        yield Static(Content(self._crumb), id="crumb")
+        yield Static(self._right or "", id="right")
+
+    def set_right(self, content) -> None:
+        self.query_one("#right", Static).update(content or "")

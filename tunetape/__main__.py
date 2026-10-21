@@ -10,33 +10,16 @@ from tunetape.player import (
 from tunetape.khinsider import fetch_album, resolve_track_url, is_khinsider_url
 from tunetape.playlist import Playlist
 from tunetape.ui import (
-    PlayerUI, main_menu_loop, set_accent, show_color_picker, show_debug,
-    show_error, show_help, show_history, show_settings, show_welcome,
-    show_ai_settings, show_ai_results, show_ai_unavailable, verify_ai_connection,
-    with_spinner, prompt_url, prompt_discover, save_terminal_state,
-    restore_terminal_state, console,
+    confirm, main_menu, play, prompt_discover, prompt_url, restore_terminal_state,
+    run_session, save_terminal_state, show_ai_results, show_ai_settings,
+    show_ai_unavailable, show_debug, show_error, show_help, show_history,
+    show_settings, show_theme_picker, verify_ai_connection, with_spinner,
 )
-
-try:
-    from tunetape.textual_player import TextualPlayer
-except ImportError:  # textual comes with the optional [tui] extra
-    TextualPlayer = None
 
 _active_controller = None
 
-# Source labels for the Textual player's top bar, by history entry type.
+# Source labels for the player's top bar, by history entry type.
 _SOURCE_NAMES = {"khinsider": "KHInsider", "spotify": "Spotify", "youtube_playlist": "YouTube"}
-
-
-def _player(title: str, controller, playlist_info: dict = None, **extra):
-    """The Textual player when the [tui] extra is installed, else the Rich PlayerUI.
-
-    ``extra`` (source / subtitle / tracks) only feeds the Textual player's top
-    bar and queue; both players return the same result strings from ``run()``.
-    """
-    if TextualPlayer is not None:
-        return TextualPlayer(title, controller, playlist_info, **extra)
-    return PlayerUI(title, controller, playlist_info)
 
 
 def _cleanup():
@@ -61,7 +44,7 @@ def _signal_handler(sig, frame):
 
 
 def _play_youtube(url: str, normalize: bool) -> str:
-    """Resolve and play a YouTube URL. Returns the PlayerUI result ('menu'/'quit')."""
+    """Resolve and play a YouTube URL. Returns the player's result ('menu'/'quit')."""
     global _active_controller
 
     try:
@@ -84,8 +67,7 @@ def _play_youtube(url: str, normalize: bool) -> str:
         _active_controller = controller
         debug.log(f"Now playing (YouTube): {info['title']}")
         history.record("youtube", url, info["title"])
-        ui = _player(info["title"], controller, source="YouTube")
-        result = ui.run()
+        result = play(info["title"], controller, source="YouTube")
     except Exception as e:
         if controller is None:
             debug.exception("YouTube playback failed to start", e)
@@ -136,8 +118,7 @@ def _play_search(query: str, normalize: bool, title: str = None) -> str:
         _active_controller = controller
         debug.log(f"Now playing (AI): {display}")
         history.record("ai", query, display)
-        ui = _player(display, controller, source="YouTube")
-        result = ui.run()
+        result = play(display, controller, source="YouTube")
     except Exception as e:
         if controller is None:
             debug.exception("AI playback failed to start", e)
@@ -209,12 +190,11 @@ def _play_album(album, *, type: str, url: str, normalize: bool,
                         "has_next": playlist.has_next(),
                         "has_prev": playlist.has_prev(),
                     }
-                    ui = _player(
+                    result = play(
                         track.name, controller, playlist_info,
                         source=_SOURCE_NAMES.get(type), subtitle=album.title,
                         tracks=[t.name for t in album.tracks],
                     )
-                    result = ui.run()
                     consecutive_failures = 0
                 except Exception as e:
                     if controller is None:
@@ -244,7 +224,7 @@ def _play_album(album, *, type: str, url: str, normalize: bool,
                 playlist.next()
             elif result == "prev_track" and playlist.has_prev():
                 playlist.prev()
-            elif result.startswith("jump_track:"):  # picked from the Textual queue
+            elif result.startswith("jump_track:"):  # picked from the queue
                 playlist.jump(int(result.split(":", 1)[1]))
             elif result == "quit":
                 break
@@ -349,7 +329,6 @@ def _recently_played(normalize: bool) -> str:
             show_error("No listening history yet.")
             return "menu"
 
-        show_welcome()
         action, payload = show_history(entries)
 
         if action == "back":
@@ -361,17 +340,11 @@ def _recently_played(normalize: bool) -> str:
                 history.remove(payload)
             continue
         elif action == "clear":
-            console.print()
-            try:
-                confirm = input("  Clear all history? (y/N) ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                confirm = "n"
-            if confirm == "y":
+            if confirm("Clear all listening history?"):
                 history.clear()
             continue
         elif action == "play":
             entry = payload
-            show_welcome()
             etype = entry.get("type")
             if etype == "ai_search":
                 # A saved vibe: re-run discovery for a fresh suggestion list
@@ -411,7 +384,6 @@ def _ai_preflight() -> str:
                 return "ok"
             reason = detail
 
-        show_welcome()
         action = show_ai_unavailable(reason)
         if action == "quit":
             return "quit"
@@ -438,7 +410,6 @@ def _discover_request(request: str, normalize: bool) -> str:
     history.record("ai_search", request, request)
 
     while True:
-        show_welcome()
         action, payload = show_ai_results(request, tracks)
         if action == "quit":
             return "quit"
@@ -447,7 +418,6 @@ def _discover_request(request: str, normalize: bool) -> str:
         if action == "research":
             return "research"
         if action == "play":
-            show_welcome()
             if _play_search(payload.resolve_hint, normalize, payload.name) == "quit":
                 return "quit"
             # Return to the suggestion list so the user can keep exploring.
@@ -466,7 +436,6 @@ def _discover(normalize: bool, initial_request: str = None) -> str:
     request = initial_request
     while True:
         if request is None:
-            show_welcome()
             request = prompt_discover()
             cmd = request.strip().lower()
             if cmd == "q":
@@ -486,7 +455,6 @@ def _settings_menu() -> str:
     """Show the settings screen and persist toggles. Returns 'menu'/'quit'."""
     while True:
         normalize = bool(config.get_setting("normalize_volume"))
-        show_welcome()
         choice = show_settings(normalize)
         if choice == "q":
             return "quit"
@@ -495,46 +463,28 @@ def _settings_menu() -> str:
         elif choice == "1":
             config.set_setting("normalize_volume", not normalize)
         elif choice == "2":
-            if show_color_picker() == "quit":
+            if show_theme_picker() == "quit":
                 return "quit"
         elif choice == "3":
             if show_ai_settings() == "quit":
                 return "quit"
 
 
-def main():
-    if "--version" in sys.argv[1:] or "-V" in sys.argv[1:]:
-        print(f"tunetape {__version__}")
-        return
-
-    save_terminal_state()
-    atexit.register(_cleanup)
-    signal.signal(signal.SIGINT, _signal_handler)
-    # SIGTERM exists but isn't delivered the same way on Windows; register it
-    # only where it's meaningful so this stays a no-crash on all platforms.
-    if hasattr(signal, "SIGTERM"):
-        try:
-            signal.signal(signal.SIGTERM, _signal_handler)
-        except (ValueError, OSError):
-            pass
-
+def _session():
+    """The whole interactive session; runs on the UI's flow thread."""
     try:
         check_dependencies(require_ytdlp=False)
     except RuntimeError as e:
         show_error(str(e))
         return
 
-    # Apply the user's saved accent color before anything is drawn.
-    set_accent(config.get_setting("accent_color"))
-
     while True:
         normalize = bool(config.get_setting("normalize_volume"))
-        choice = main_menu_loop()
+        choice = main_menu()
 
         if choice == "q":
             break
         elif choice == "1":
-            show_welcome()
             url = prompt_url()
             cmd = url.strip().lower()
             if cmd == "q":
@@ -558,6 +508,29 @@ def main():
         elif choice == "d":
             if show_debug() == "quit":
                 break
+
+
+def main():
+    if "--version" in sys.argv[1:] or "-V" in sys.argv[1:]:
+        print(f"tunetape {__version__}")
+        return
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("tunetape requires an interactive terminal.", file=sys.stderr)
+        sys.exit(1)
+
+    save_terminal_state()
+    atexit.register(_cleanup)
+    signal.signal(signal.SIGINT, _signal_handler)
+    # SIGTERM exists but isn't delivered the same way on Windows; register it
+    # only where it's meaningful so this stays a no-crash on all platforms.
+    if hasattr(signal, "SIGTERM"):
+        try:
+            signal.signal(signal.SIGTERM, _signal_handler)
+        except (ValueError, OSError):
+            pass
+
+    run_session(_session)
 
 
 if __name__ == "__main__":

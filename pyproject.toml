@@ -25,15 +25,13 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 dependencies = [
-    "rich>=13.0,<15",
+    "textual>=8.2,<9",
+    "rich>=14.2,<15",  # comes with textual; widgets.py measures with rich.cells
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
-# Textual player screen (tunetape/textual_player.py); used in place of the Rich
-# player whenever it is installed.
-tui = ["textual>=8.2"]
 
 [project.urls]
 Homepage = "https://github.com/oauramos/tunetape"

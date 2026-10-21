@@ -46,7 +46,7 @@ def test_set_volume_ignores_non_numeric(isolated):
 
 
 def test_volume_independent_of_other_settings(isolated):
-    config.set_setting("accent_color", "magenta")
+    config.set_setting("theme", "nord")
     config.set_volume(70)
-    assert config.get_setting("accent_color") == "magenta"
+    assert config.get_setting("theme") == "nord"
     assert config.get_volume() == 70.0

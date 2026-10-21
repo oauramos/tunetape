@@ -35,14 +35,14 @@
 
 ## What is tunetape?
 
-tunetape is a small, keyboard-driven audio player that lives in your terminal. It hands the stream to [mpv](https://mpv.io/) (audio only) and wraps it in a clean text UI with real player controls. Nothing is downloaded or stored; it just plays.
+tunetape is a small, keyboard-driven audio player that lives in your terminal. It hands the stream to [mpv](https://mpv.io/) (audio only) and wraps it in a clean text UI with real player controls, and the mouse works too. Nothing is downloaded or stored; it just plays.
 
 - **Play from three sources.** YouTube videos and playlists, Spotify tracks and playlists, and [KHInsider](https://downloads.khinsider.com) video game soundtracks. Paste any link and the source is detected for you.
-- **A real player.** Play/pause, seek, a volume meter, mute, next/previous track, and auto-advance through playlists.
+- **A real player.** Play/pause, seek, a volume meter, mute, next/previous track, a queue you can jump around in, and auto-advance through playlists.
 - **Recently played.** Everything you play is remembered, and playlists resume at the track you left off.
 - **Discover with AI.** Describe a vibe ("calm piano for focus") and get a list of real songs to play. Bring your own API key; the feature stays off until you add one.
 - **Sounds even.** Optional loudness normalization keeps volume consistent across sources, and your last volume is remembered.
-- **Runs everywhere.** macOS, Linux and Windows.
+- **Runs everywhere.** macOS, Linux and Windows, down to a 60-column terminal.
 
 ## Install
 
@@ -93,18 +93,18 @@ Press **1** on the main menu and paste a YouTube, Spotify or KHInsider URL. tune
 
 ### 2. It plays
 
-The stream opens in mpv and you get a player with a progress bar, volume meter and one-key controls.
+The stream opens in mpv and you get a player with a tape counter, progress bar, volume meter and one-key controls. The buttons are clickable, the mouse wheel sets the volume and a click on the bar seeks.
 
 <p align="center">
-  <img src="assets/player.png" alt="The player screen showing Now Playing, a progress bar, the volume meter and boxed key controls" width="860">
+  <img src="assets/player.png" alt="The player screen: the tuna mascot carrying a cassette, the tape counter, a progress bar, the volume meter and boxed key controls" width="860">
 </p>
 
 ### 3. Playlists just work
 
-Spotify playlists, YouTube playlists and KHInsider albums show the track position and add **n** / **p** for next and previous. Tracks advance on their own.
+Spotify playlists, YouTube playlists and KHInsider albums show the track position and add **n** / **p** for next and previous. Tracks advance on their own, and on a wide terminal the queue sits alongside: **tab** into it and press Enter to jump to any track.
 
 <p align="center">
-  <img src="assets/playlist.png" alt="The player in playlist mode showing Track 12/64 with next and prev buttons" width="860">
+  <img src="assets/playlist.png" alt="The player in playlist mode showing Track 12/24, next and prev buttons, and the album's queue" width="860">
 </p>
 
 ## Screens
@@ -127,10 +127,10 @@ Type what you feel like hearing and pick a song from the suggestions. Each one s
 
 ### Settings
 
-Toggle loudness normalization, pick an accent color for the whole interface, and set up AI discovery.
+Toggle loudness normalization, pick a theme for the whole interface (with a live preview), and set up AI discovery.
 
 <p align="center">
-  <img src="assets/settings.png" alt="The Settings screen with volume normalization, accent color and AI discovery options" width="860">
+  <img src="assets/settings.png" alt="The Settings screen with volume normalization, theme and AI discovery options" width="860">
 </p>
 
 ## Keys you will actually use
@@ -138,13 +138,15 @@ Toggle loudness normalization, pick an accent color for the whole interface, and
 | Key | Action |
 |:---:|--------|
 | `space` | Play / pause |
-| `←` `→` | Seek 10s |
-| `↑` `↓` | Volume |
+| `←` `→` | Seek 10s (or click the progress bar) |
+| `↑` `↓` | Volume (or the mouse wheel) |
 | `n` `p` | Next / previous track |
+| `tab` | Browse the queue, Enter plays |
 | `m` | Mute |
-| `h` | Toggle the full help overlay |
+| `h` | Help overlay |
 | `b` | Back |
 | `q` | Quit |
+| `ctrl+p` | Command palette (themes) |
 
 The complete key reference for every screen is in the wiki: **[Usage and Controls](https://github.com/oauramos/tunetape/wiki/Usage-and-Controls)**.
 
@@ -156,7 +158,7 @@ The **[wiki](https://github.com/oauramos/tunetape/wiki)** has the details this p
 - [Usage and Controls](https://github.com/oauramos/tunetape/wiki/Usage-and-Controls): each screen and every key
 - [Sources](https://github.com/oauramos/tunetape/wiki/Sources): what links work and how each source is streamed
 - [AI Discovery](https://github.com/oauramos/tunetape/wiki/AI-Discovery): Anthropic, OpenAI-compatible endpoints and local models
-- [Settings](https://github.com/oauramos/tunetape/wiki/Settings): normalization, accent colors, where your data lives
+- [Settings](https://github.com/oauramos/tunetape/wiki/Settings): normalization, themes, where your data lives
 - [Troubleshooting](https://github.com/oauramos/tunetape/wiki/Troubleshooting): playback stalls, missing tools, the Debug screen
 - [FAQ](https://github.com/oauramos/tunetape/wiki/FAQ)
 
@@ -164,7 +166,7 @@ The **[wiki](https://github.com/oauramos/tunetape/wiki)** has the details this p
 
 - [mpv](https://mpv.io/), the media player doing the actual playback
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp), which resolves YouTube streams
-- [rich](https://github.com/Textualize/rich), which draws the terminal UI
+- [Textual](https://github.com/Textualize/textual), which draws the terminal UI
 
 ## License
 
