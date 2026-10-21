@@ -6,13 +6,14 @@ old line-by-line prompts. Each screen answers with the same values the Rich
 functions it replaced used to return.
 """
 
+import time
 from typing import NamedTuple, Optional
 
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, ProgressBar, Static
 
 from tunetape import __version__
 from tunetape.art import ASCII_HEIGHT, ASCII_WIDTH
@@ -427,57 +428,85 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 class BusyScreen(FlowScreen):
-    """The tuna with its reels turning while the flow does something slow."""
+    """A small box listing what the flow is doing, while it does something slow.
+
+    Each message becomes a step: finished ones get a ✓ and how long they
+    took, the current one a spinner and a running clock.
+    """
 
     QUIT_RESULT = NO_QUIT
 
     def __init__(self, message: str, detail: str = ""):
         super().__init__()
-        self.message = message
+        self.steps = [[message, time.monotonic(), None]]  # [message, started, ended]
         self.detail = detail
         self._tick = 0
-        self._done = None  # (ok, text) once finish() is called
+        self._result = None  # (ok, text) once finish() is called
 
     def compose(self):
         yield TopBar()
-        with Vertical(id="busy"):
-            yield Tuna(playing=True)
-            yield Static(id="busy-line")
-            yield Static(id="busy-detail", classes="hint")
+        with Vertical(classes="body"):
+            with Vertical(id="busy", classes="box"):
+                yield Static(id="busy-steps")
+                yield ProgressBar(total=None, show_percentage=False, show_eta=False,
+                                  id="busy-bar")
+                yield Static(id="busy-detail", classes="hint")
 
     def on_mount(self) -> None:
+        box = self.query_one("#busy")
+        box.border_title = "loading"
+        box.border_subtitle = "ctrl+c quit"
         self._draw()
         self.set_interval(1 / 12, self._spin)
 
     def _spin(self) -> None:
         self._tick += 1
-        if self._done is None:
+        if self._result is None:
             self._draw()
 
     def _draw(self) -> None:
-        line = self.query_one("#busy-line", Static)
-        if self._done is None:
-            line.update(Content.from_markup(
-                "[$primary]$glyph[/] $message", glyph=SPINNER[self._tick % len(SPINNER)],
-                message=self.message,
-            ))
-        else:
-            ok, text = self._done
-            line.update(Content.from_markup(
+        now = time.monotonic()
+        width = max(len(message.rstrip("…")) for message, _, _ in self.steps)
+        lines = []
+        for message, started, ended in self.steps:
+            name = message.rstrip("…").ljust(width)
+            seconds = f"{(ended or now) - started:.1f}s"
+            if ended is None and self._result is None:
+                glyph = SPINNER[self._tick % len(SPINNER)]
+                lines.append(Content.from_markup(
+                    "[$primary]$glyph[/] $name  [$foreground 50%]$seconds[/]",
+                    glyph=glyph, name=name, seconds=seconds))
+            else:
+                lines.append(Content.from_markup(
+                    "[$success]✓[/] [$foreground 60%]$name  $seconds[/]",
+                    name=name, seconds=seconds))
+        if self._result is not None:
+            ok, text = self._result
+            lines.append(Content.from_markup(
                 "[b $success]✓ Connected[/] [$foreground 60%]· $text responded.[/]" if ok
                 else "[b $warning]✗ $text[/]", text=text,
             ))
-        self.query_one("#busy-detail", Static).update(Content(self.detail))
+        self.query_one("#busy-steps", Static).update(Content("\n").join(lines))
+        detail = self.query_one("#busy-detail", Static)
+        detail.update(Content(self.detail))
+        detail.display = bool(self.detail)
 
     def set_message(self, message: str, detail: str = "") -> None:
-        self.message, self.detail, self._done = message, detail, None
+        """The flow moved on: close the current step and start ``message``."""
+        now = time.monotonic()
+        if self.steps[-1][2] is None:
+            self.steps[-1][2] = now
+        self.steps.append([message, now, None])
+        self.detail, self._result = detail, None
+        self.query_one("#busy-bar").display = True
         self._draw()
 
     def finish(self, ok: bool, text: str) -> None:
-        """Hold a ✓ or ✗ in place of the spinner."""
-        self._done = (ok, text)
+        """Hold a ✓ or ✗ under the steps instead of the spinner."""
+        self.steps[-1][2] = time.monotonic()
+        self._result = (ok, text)
         self.detail = ""
-        self.query_one(Tuna).playing = False
+        self.query_one("#busy-bar").display = False
         self._draw()
 
 

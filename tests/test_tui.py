@@ -353,6 +353,16 @@ def test_with_spinner_shows_progress_and_returns():
     assert result == "BusyScreen"
 
 
+def test_busy_screen_lists_each_step():
+    def flow():
+        ui.with_spinner("Fetching playlist…", lambda: None)
+        ui.with_spinner("Loading track 1/7…", lambda: None)
+        return [step[0] for step in ui._app.screen.steps], ui._app.screen.steps[0][2] is not None
+
+    result, _ = drive(flow, keys())
+    assert result == (["Fetching playlist…", "Loading track 1/7…"], True)
+
+
 def test_quit_while_busy_closes_the_session():
     import threading
 

@@ -84,13 +84,17 @@ Screen.-compact .body { padding: 1 1; }
 Screen.-compact .card { padding: 0 1; }
 
 /* --- menu and waiting -------------------------------------------------- */
-#home, #busy { height: 1fr; align: center middle; padding: 0 2; }
+#home { height: 1fr; align: center middle; padding: 0 2; }
 #welcome { width: 1fr; text-align: center; margin-bottom: 1; }
 #ascii-tuna { display: none; }
 MenuScreen.-ascii-width.-ascii-height #ascii-tuna { display: block; }
 MenuScreen.-ascii-width.-ascii-height Tuna,
 MenuScreen.-ascii-width.-ascii-height #welcome { display: none; }
-#busy-line, #busy-detail { width: 1fr; text-align: center; }
+#busy { width: 64; max-width: 100%; height: auto; padding: 1 2; }
+#busy-bar { width: 100%; margin-top: 1; }
+#busy-bar Bar { width: 1fr; }
+#busy-bar Bar > .bar--indeterminate { color: $primary; background: $panel; }
+#busy-detail { margin-top: 1; }
 
 /* --- modals ------------------------------------------------------------ */
 ErrorModal, ConfirmModal, HelpModal, EditModal {
