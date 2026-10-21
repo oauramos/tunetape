@@ -1,18 +1,206 @@
-"""Cassette ("tuna") ASCII art and the shared UI palette.
+"""The tunetape look: the Textual theme and the tuna + tape mascot.
 
-The original hand-drawn cassette. ``render_cassette`` returns the raw art;
-``render_welcome`` returns a styled Rich Text with the title/signature overlaid
-inside the cassette's dark label window. ``render_cassette`` keeps the
-``frame``/``spinning`` args for call-site compatibility (the art is static).
+tunetape = tuna + tape, so the mascot is a tuna carrying a cassette. It comes
+in two drawings:
+
+* the original hand-drawn ASCII tuna, which greets you on the welcome screen
+  when the terminal has room for it (81 x 23), and
+* a pixel-art tuna drawn two pixels per cell with half blocks, in a large and
+  a small size, used everywhere else and on small terminals. In its grids "."
+  is empty, "o" outline, "b" body and "f" fin. The grids are the source of
+  truth and are edited by hand.
 """
 
-from rich.text import Text
+from textual.content import Content
+from textual.theme import Theme
 
-# Tape-deck palette, reused across the UI for a consistent look.
-ACCENT = "cyan"
-ACCENT2 = "magenta"
+# Cyan + pink on a deep navy; every screen styles itself from theme variables,
+# so any Textual theme picked in Settings recolours the whole interface.
+TUNETAPE_THEME = Theme(
+    name="tunetape",
+    primary="#8BE9FD",
+    secondary="#BD93F9",
+    accent="#FF79C6",
+    foreground="#E4E6EB",
+    background="#15161C",
+    surface="#1C1D25",
+    panel="#262836",
+    success="#50FA7B",
+    warning="#F1FA8C",
+    error="#FF5555",
+    dark=True,
+)
+DEFAULT_THEME = TUNETAPE_THEME.name
 
-CASSETTE = (
+TUNA_LARGE = [  # 56 x 13 cells
+    ".......................o................................",
+    "....................oooo..............................o.",
+    "..................oofffo............................ooo.",
+    ".................offffffo.........................oobo..",
+    "...........oooooobbbbbbbboooo.....................obbo..",
+    "........ooobbbbbbbbbbbbbbbbbboooo................obbbo..",
+    "......oobbbbbbbbbbbbbbbbbbbbbbbbbooo............obbbo...",
+    ".....obbbbbbbbbbbbbbbbbbbbbbbbbbbbbboo.........obbbbo...",
+    "....obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbooo.....obbbbo....",
+    "..oobbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo..oobbbbo.....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbboobbbbbbo.....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    "obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    "obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbboobbbbbbo.....",
+    "..oobbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo..oobbbbo.....",
+    "....obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbooo.....obbbbo....",
+    ".....obbbbbbbbbbbbbbbbbbbbbbbbbbbbbboo.........obbbbo...",
+    "......oobbbbbbbbbbbbbbbbbbbbbbbbbooo............obbbo...",
+    "........ooobbbbbbbbbbbbbbbbbboooo................obbbo..",
+    "...........oooooooooooooooooo.....................obbo..",
+    "..................................................oobo..",
+    "....................................................ooo.",
+    "......................................................o.",
+    "........................................................",
+]
+TUNA_SMALL = [  # 42 x 9 cells
+    "...............o.......................oo.",
+    ".............ooo.....................oobo.",
+    ".........oooobbboooo................obbo..",
+    "......ooobbbbbbbbbbbooooo..........obbbo..",
+    "....oobbbbbbbbbbbbbbbbbbbooo......obbbo...",
+    "...obbbbbbbbbbbbbbbbbbbbbbbboo...obbbbo...",
+    "..obbbbbbbbbbbbbbbbbbbbbbbbbbbooobbbbo....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo....",
+    "obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    "obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo.....",
+    ".obbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbo....",
+    "..obbbbbbbbbbbbbbbbbbbbbbbbbbbooobbbbo....",
+    "...obbbbbbbbbbbbbbbbbbbbbbbboo...obbbbo...",
+    "....oobbbbbbbbbbbbbbbbbbbooo......obbbo...",
+    "......ooobbbbbbbbbbbooooo..........obbbo..",
+    ".........ooooooooooo................obbo..",
+    ".....................................oobo.",
+    ".......................................oo.",
+]
+# Solid theme colours: an alpha fill drawn as the foreground of a half block
+# would blend with the outline behind it instead of with the background.
+PIXEL_STYLES = {"o": "$primary", "b": "$primary-background-darken-2", "f": "$primary-muted"}
+# The same fish caught in the light, for the shine that sweeps across it.
+SHINE_STYLES = {"o": "$primary-lighten-3", "b": "$primary-background", "f": "$primary"}
+
+HUB_FRAMES = "┼╳"  # reel hub spokes, an eighth of a turn per frame
+
+
+def fish_cells(pixels: list, eye: tuple, styles: dict = PIXEL_STYLES) -> list:
+    """The fish as rows of cells (a space, or a (char, style) pair), no cassette yet."""
+    rows = []
+    for r in range(0, len(pixels), 2):
+        row = []
+        for top, bottom in zip(pixels[r], pixels[r + 1]):
+            if top == "." and bottom == ".":
+                row.append(" ")
+            elif top == bottom:
+                row.append(("█", styles[top]))
+            elif top == ".":
+                row.append(("▄", styles[bottom]))
+            elif bottom == ".":
+                row.append(("▀", styles[top]))
+            else:
+                row.append(("▀", f"{styles[top]} on {styles[bottom]}"))
+        rows.append(row)
+    eye_row, eye_col = eye
+    rows[eye_row][eye_col] = ("●", f"$background on {styles['b']}")
+    return rows
+
+
+def _tape(frame: int, length: int) -> str:
+    # A glint travels left (supply reel) to right (take-up reel) along the tape.
+    glint = frame % (length + 2)
+    return "".join(
+        "[$primary]═[/]" if 0 <= i - glint + 2 < 2 else "[$foreground 35%]═[/]"
+        for i in range(length)
+    )
+
+
+def _hub(frame: int) -> str:
+    return f"[b $accent]{HUB_FRAMES[frame % len(HUB_FRAMES)]}[/]"
+
+
+def cassette_large(frame: int) -> list:
+    hub = _hub(frame)
+    return [
+        "╭────────────────────────╮",
+        "│ ╭───╮ ┌────────┐ ╭───╮ │",
+        f"│ │ {hub} │ │{_tape(frame, 8)}│ │ {hub} │ │",
+        "│ ╰───╯ └────────┘ ╰───╯ │",
+        "╰────╱──────────────╲────╯",
+    ]
+
+
+def cassette_small(frame: int) -> list:
+    hub = _hub(frame)
+    return [
+        "╭────────────────╮",
+        f"│ ({hub}) {_tape(frame, 6)} ({hub}) │",
+        "╰───╱────────╲───╯",
+    ]
+
+
+class TunaArt:
+    """One size of the mascot, ready to draw at any animation frame."""
+
+    def __init__(self, pixels: list, eye: tuple, tape_at: tuple, cassette):
+        self.cells = fish_cells(pixels, eye)
+        self.shine_cells = fish_cells(pixels, eye, SHINE_STYLES)
+        self.width = len(pixels[0])
+        self.height = len(self.cells)
+        self.tape_at = tape_at  # top-left cell of the cassette window
+        self.cassette = cassette
+
+    def render(self, frame: int = 0, shine: int = None) -> Content:
+        """The tuna with its cassette; ``shine`` is the column of a diagonal glint."""
+        tape = [
+            Content.from_markup(f"[$primary on $background]{row}[/]")
+            for row in self.cassette(frame)
+        ]
+        tape_row, tape_col = self.tape_at
+        tape_end = tape_col + tape[0].cell_length
+        lines = []
+        for r, (row, lit) in enumerate(zip(self.cells, self.shine_cells)):
+            if shine is not None:
+                # A band a few cells wide, leaning like light through water.
+                row = [
+                    lit[c] if 0 <= c + 2 * r - shine < 6 else cell
+                    for c, cell in enumerate(row)
+                ]
+            k = r - tape_row
+            if 0 <= k < len(tape):
+                lines.append(Content.assemble(*row[:tape_col], tape[k], *row[tape_end:]))
+            else:
+                lines.append(Content.assemble(*row))
+        return Content("\n").join(lines)
+
+
+class CassetteArt:
+    """Just the tape, for when not even the small tuna fits."""
+
+    width, height = 18, 3
+
+    def render(self, frame: int = 0, shine: int = None) -> Content:
+        return Content("\n").join(
+            Content.from_markup(f"[$primary]{row}[/]") for row in cassette_small(frame)
+        )
+
+
+# Biggest first: the mascot widget draws the first one that fits.
+TUNA_ART = {
+    "large": TunaArt(TUNA_LARGE, (5, 3), (4, 9), cassette_large),
+    "small": TunaArt(TUNA_SMALL, (3, 3), (3, 7), cassette_small),
+    "cassette": CassetteArt(),
+}
+
+
+# --- the original ASCII tuna ------------------------------------------------
+
+ASCII_TUNA = (
     '                                 ,\n'
     '                               _▄▓▌\n'
     '                             ╓▓╬▄╠█▄\n'
@@ -38,72 +226,50 @@ CASSETTE = (
     '                                     ╙▀\n'
 )
 
-# User-selectable accent colors (Settings → Accent color), for fun.
-ACCENT_COLORS = [
-    "cyan", "bright_cyan", "green", "yellow",
-    "magenta", "bright_magenta", "blue", "red",
-]
-
 # The cassette's dark label window: columns [28, 61) are blank on rows 7-8,
-# right below the top edge. The title/signature are overlaid here. The window
-# is 33 wide — exactly enough for the longest line.
-_WIN_START = 28
-_WIN_END = 61
-# row index -> (text, weight). Weight pairs with the live accent at render time.
-_LABELS = {
-    7: ("Welcome to TuneTape", "bold"),
-    8: ("Terminal Player by @oauramos", "dim"),
+# right below the top edge, exactly wide enough for the title and signature.
+_WINDOW = (28, 61)
+_TITLE = {
+    7: ("Welcome to TuneTape", "b $primary"),
+    8: ("Terminal Player by @oauramos", "$foreground 60%"),
 }
+# A soft shine that sweeps diagonally across the tuna, one band at a time.
+_SHINE_PERIOD = 120  # columns between sweeps
+_SHINE_BAND = 9      # width of the bright band
+_SHINE_SPEED = 3     # columns advanced per frame
+
+ASCII_LINES = ASCII_TUNA.rstrip("\n").split("\n")
+ASCII_WIDTH = max(len(line) for line in ASCII_LINES)
+ASCII_HEIGHT = len(ASCII_LINES)
 
 
-# A soft "shine" that sweeps diagonally across the tuna when animated.
-_SHIMMER_PERIOD = 120  # columns between sweeps (large -> one band at a time)
-_SHIMMER_BAND = 9      # width of the bright band
-_SHIMMER_SPEED = 3     # columns advanced per frame
-
-
-def _char_style(col: int, row: int, frame) -> str:
-    """Style one art glyph; a bright band sweeps diagonally when animated."""
-    if frame is None:
-        return ACCENT
-    pos = (col + row - frame * _SHIMMER_SPEED) % _SHIMMER_PERIOD
-    return f"bold {ACCENT}" if pos < _SHIMMER_BAND else ACCENT
-
-
-def _append_art(out: Text, text: str, start_col: int, row: int, frame) -> None:
-    """Append art text, grouping consecutive same-styled columns into runs."""
-    if not text:
-        return
-    run, run_style = text[0], _char_style(start_col, row, frame)
-    for j in range(1, len(text)):
-        st = _char_style(start_col + j, row, frame)
-        if st == run_style:
-            run += text[j]
+def _ascii_run(text: str, start: int, row: int, frame) -> Content:
+    """Art text styled per column, grouped into runs of the same style."""
+    parts = []
+    for col, char in enumerate(text, start):
+        lit = frame is not None and (col + row - frame * _SHINE_SPEED) % _SHINE_PERIOD < _SHINE_BAND
+        style = "b $primary-lighten-3" if lit else "$primary"
+        if parts and parts[-1][1] == style:
+            parts[-1][0] += char
         else:
-            out.append(run, style=run_style)
-            run, run_style = text[j], st
-    out.append(run, style=run_style)
+            parts.append([char, style])
+    return Content.assemble(*(tuple(p) for p in parts))
 
 
-def render_cassette(frame: int = 0, spinning: bool = False) -> str:
-    """Return the raw cassette art (static; args kept for compatibility)."""
-    return CASSETTE
-
-
-def render_welcome(frame=None) -> Text:
-    """Return the cassette as styled Rich Text, with the title/signature
-    overlaid inside its dark window (alignment preserved). When ``frame`` is an
-    int, a bright band sweeps diagonally across the tuna — call repeatedly with
-    an increasing frame to animate. Uses the current accent color."""
-    width = _WIN_END - _WIN_START
-    out = Text()
-    for i, line in enumerate(CASSETTE.rstrip("\n").split("\n")):
-        if i in _LABELS:
-            text, weight = _LABELS[i]
-            _append_art(out, line[:_WIN_START], 0, i, frame)
-            out.append(text.center(width), style=f"{weight} {ACCENT}")
-            _append_art(out, line[_WIN_END:], _WIN_END, i, frame)
+def ascii_tuna(frame: int = None) -> Content:
+    """The ASCII tuna with the title in its window; ``frame`` animates the shine."""
+    start, end = _WINDOW
+    lines = []
+    for row, line in enumerate(ASCII_LINES):
+        if row in _TITLE:
+            text, style = _TITLE[row]
+            content = Content.assemble(
+                _ascii_run(line[:start], 0, row, frame),
+                (text.center(end - start), style),
+                _ascii_run(line[end:], end, row, frame),
+            )
         else:
-            _append_art(out, line, 0, i, frame)
-        out.append("\n")
-    return out
+            content = _ascii_run(line, 0, row, frame)
+        # Pad to a block so centring the art never shifts one line against another.
+        lines.append(content.pad_right(ASCII_WIDTH - content.cell_length))
+    return Content("\n").join(lines)

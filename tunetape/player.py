@@ -133,6 +133,12 @@ _DEFAULT_YTDLP_CLIENTS = "visionos,web_embedded"
 # mpv echoes the whole stream URL in its load errors; keep log lines readable.
 _MPV_LOG_LINE_MAX = 200
 
+# An audio filter that only measures: libavfilter's astats, reset every frame,
+# publishes per-channel peak and RMS levels (dBFS) that the player's level
+# meter reads back through mpv's af-metadata property.
+_METER_LABEL = "meter"
+_METER_FILTER = f"@{_METER_LABEL}:lavfi=[astats=metadata=1:reset=1]"
+
 
 def _ytdlp_client_args() -> list:
     """Extractor args pinning which YouTube client yt-dlp resolves streams with.
@@ -293,14 +299,15 @@ class MPVController:
         self._last_muted = False
 
         if not self._spawn_and_connect(stream_url, normalize, volume):
-            # The audio filter may be unavailable on a minimal mpv build; retry
-            # once without it before giving up so playback isn't blocked.
-            if not (normalize and self._spawn_and_connect(stream_url, False, volume)):
+            # The audio filters may be unavailable on a minimal mpv build; retry
+            # once without them before giving up so playback isn't blocked.
+            if not self._spawn_and_connect(stream_url, False, volume, meter=False):
                 self._ipc.cleanup()
                 self._cleanup_log()
                 raise RuntimeError("Could not connect to the player. Try again.")
 
-    def _spawn_and_connect(self, stream_url: str, normalize: bool, volume: float = None) -> bool:
+    def _spawn_and_connect(self, stream_url: str, normalize: bool, volume: float = None,
+                           meter: bool = True) -> bool:
         """Launch mpv and connect to its IPC socket. Returns True on success.
 
         On failure, reaps the spawned process so a retry can start cleanly.
@@ -320,11 +327,17 @@ class MPVController:
             "--msg-level=all=error",
             f"--input-ipc-server={self._ipc.server_address}",
         ]
+        filters = []
         if normalize:
             # Even out loudness across sources. Uses mpv's built-in libavfilter
             # (no separate ffmpeg binary needed); dynaudnorm is single-pass and
             # real-time friendly, which suits streaming.
-            args.append("--af=dynaudnorm")
+            filters.append("dynaudnorm")
+        if meter:
+            # Last in the chain, so it measures what you hear (before volume).
+            filters.append(_METER_FILTER)
+        if filters:
+            args.append("--af=" + ",".join(filters))
         if volume is not None:
             # Start at the user's last-set level instead of mpv's default 100%.
             args.append(f"--volume={int(round(float(volume)))}")
@@ -493,6 +506,53 @@ class MPVController:
     def is_paused(self) -> bool:
         resp = self._send(["get_property", "pause"])
         return bool(resp.get("data", False))
+
+    def _get(self, name: str):
+        """A property's value, or None when mpv doesn't have it (yet)."""
+        resp = self._send(["get_property", name])
+        return resp.get("data") if resp.get("error") == "success" else None
+
+    def get_levels(self):
+        """Per-channel (rms, peak) levels in dBFS from the meter filter, or None.
+
+        Read every frame by the filter, so this is the sound right now; the
+        values are stale while paused, which the caller knows about.
+        """
+        meta = self._get(f"af-metadata/{_METER_LABEL}")
+        if not isinstance(meta, dict):
+            return None
+        levels = []
+        for channel in range(1, 9):
+            rms = meta.get(f"lavfi.astats.{channel}.RMS_level")
+            peak = meta.get(f"lavfi.astats.{channel}.Peak_level")
+            if rms is None or peak is None:
+                break
+            try:
+                levels.append((float(rms), float(peak)))  # "-inf" for silence
+            except ValueError:
+                break
+        return levels or None
+
+    def get_stats(self) -> dict:
+        """What is playing and how it is arriving, for the player's stream panel.
+
+        Every value may be None (not known yet, or not applicable).
+        """
+        params = self._get("audio-params") or {}
+        cache = self._get("demuxer-cache-state") or {}
+        filters = self._get("af") or []
+        return {
+            "codec": self._get("audio-codec-name"),
+            "bitrate": self._get("audio-bitrate"),            # bits/s
+            "samplerate": params.get("samplerate"),
+            "channels": params.get("hr-channels") or params.get("channels"),
+            "container": self._get("file-format"),
+            "ahead": self._get("demuxer-cache-duration"),     # seconds buffered
+            "cached": cache.get("total-bytes"),               # bytes held in cache
+            "speed": self._get("cache-speed"),                # bytes/s downloading
+            "normalized": any(f.get("name") == "dynaudnorm" for f in filters
+                              if isinstance(f, dict)),
+        }
 
     def is_alive(self) -> bool:
         return self._proc is not None and self._proc.poll() is None

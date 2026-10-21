@@ -1,371 +1,471 @@
+"""tunetape's interface: one Textual app for the whole session.
+
+The session flow in ``__main__`` (menu → fetch → play → back to the menu) is
+plain blocking code. ``run_session`` starts the Textual app on the main thread
+and runs that flow on a worker thread; each function below shows a screen and
+blocks the flow until the screen answers, returning what the old Rich prompt
+of the same name returned. Slow work (yt-dlp, the AI) runs on the flow thread
+while the app keeps animating.
+"""
+
 import os
 import sys
 import threading
 import time
 from datetime import datetime, timezone
+from typing import Optional
 
-from rich import box
-from rich.columns import Columns
-from rich.console import Console, Group
-from rich.live import Live
-from rich.markup import escape
-from rich.padding import Padding
-from rich.panel import Panel
-from rich.table import Table
-from rich.text import Text
+from textual.app import App
+from textual.binding import Binding
+from textual.content import Content
+from textual.screen import ModalScreen
 
-from tunetape import __version__, ai, art, config, debug, keyboard, paths
-from tunetape.art import ACCENT, ACCENT2
-# Re-exported so callers (e.g. __main__) keep importing them from tunetape.ui.
-from tunetape.keyboard import restore_terminal_state, save_terminal_state  # noqa: F401
-from tunetape.player import find_executable
+from tunetape import __version__, ai, config, debug, paths
+from tunetape.art import DEFAULT_THEME, TUNETAPE_THEME
+from tunetape.player_screen import PlayerScreen, format_time
+from tunetape.screens import (
+    BusyScreen, ConfirmModal, DebugScreen, Edit, ErrorModal, HelpModal, HistoryScreen,
+    MenuScreen, NO_QUIT, NoticeScreen, OptionsScreen, PromptScreen, Row, SuggestionsScreen,
+    ThemeScreen,
+)
+# Re-exported for __main__'s signal and atexit handlers.
+from tunetape.terminal import restore_terminal_state, save_terminal_state  # noqa: F401
+
+CSS = """
+/* --- shared layout ------------------------------------------------------ */
+.body { height: 1fr; padding: 1 2; align: center middle; }
+/* A card sizes to its content up to the screen; its intro is docked on top and
+   its key caps at the bottom, so a long list in between scrolls instead of
+   pushing the caps off screen. */
+.card {
+    width: 1fr;
+    max-width: 84;
+    height: auto;
+    max-height: 100%;
+    padding: 1 2;
+    border: round $primary 50%;
+    border-title-color: $primary;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+}
+.card.-fill { height: 1fr; }
+.card.-warning { border: round $warning 70%; border-title-color: $warning; }
+.card.-error { border: round $error 70%; border-title-color: $error; }
+.card > .intro { dock: top; height: auto; margin-bottom: 1; }
+.card > KeyCaps { dock: bottom; margin-top: 1; }
+.card > .foot { dock: bottom; height: auto; }
+.card > .foot > KeyCaps { margin-top: 1; }
+.card > OptionList, .card > VerticalScroll { height: auto; max-height: 100%; }
+.card.-fill > OptionList, .card.-fill > VerticalScroll { height: 1fr; }
+.card Input { border: round $primary 40%; background: transparent; }
+.card Input:focus { border: round $primary; }
+.card OptionList {
+    padding: 0;
+    border: none;
+    background: transparent;
+    scrollbar-size-vertical: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+.card OptionList:focus { border: none; }
+/* A tint rather than Textual's solid block cursor, which hides coloured text. */
+OptionList > .option-list--option-highlighted {
+    color: $foreground;
+    background: $primary 10%;
+    text-style: none;
+}
+OptionList:focus > .option-list--option-highlighted {
+    background: $primary 22%;
+    text-style: bold;
+}
+.hint { color: $text-muted; }
+#option-help { height: 2; margin-top: 1; color: $text-muted; }
+Screen.-compact .body { padding: 1 1; }
+Screen.-compact .card { padding: 0 1; }
+
+/* --- menu and waiting -------------------------------------------------- */
+#home { height: 1fr; align: center middle; padding: 0 2; }
+#welcome { width: 1fr; text-align: center; margin-bottom: 1; }
+#ascii-tuna { display: none; }
+MenuScreen.-ascii-width.-ascii-height #ascii-tuna { display: block; }
+MenuScreen.-ascii-width.-ascii-height Tuna,
+MenuScreen.-ascii-width.-ascii-height #welcome { display: none; }
+#busy { width: 64; max-width: 100%; height: auto; padding: 1 2; }
+#busy-bar { width: 100%; margin-top: 1; }
+#busy-bar Bar { width: 1fr; }
+#busy-bar Bar > .bar--indeterminate { color: $primary; background: $panel; }
+#busy-detail { margin-top: 1; }
+#busy-caps { margin-top: 1; }
+
+/* --- modals ------------------------------------------------------------ */
+ErrorModal, ConfirmModal, HelpModal, EditModal {
+    align: center middle;
+    background: $background 60%;
+}
+#error, #confirm, #edit { width: 64; max-width: 100%; background: $surface; }
+#help { width: auto; max-width: 100%; padding: 1 3; background: $surface; }
+#help > VerticalScroll, #help Static, #help > KeyCaps { width: auto; }
+#log { scrollbar-size-vertical: 1; }
+
+/* --- player ------------------------------------------------------------ */
+/* btop-like: square-ish boxes edge to edge, titles in the borders. */
+.box {
+    border: round $primary 40%;
+    border-title-color: $primary;
+    border-title-style: bold;
+    border-subtitle-color: $text-muted;
+    padding: 0 1;
+    background: $background;
+}
+#player-body { height: 1fr; padding: 0 1; }
+#deck { width: 1fr; height: 100%; }
+#now { height: auto; }
+#now-top, #time-row { height: 1; }
+#title { width: 1fr; text-style: bold; }
+#status { width: auto; padding-left: 2; }
+#subtitle { color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
+#time-row { margin-top: 1; }
+#elapsed { width: auto; color: $primary; }
+#duration { width: auto; color: $text-muted; }
+#progress { width: 1fr; padding: 0 1; }
+#progress Bar { width: 1fr; }
+#progress Bar > .bar--bar { color: $primary; background: $panel; }
+#progress Bar > .bar--complete { color: $primary; background: $panel; }
+#progress Bar > .bar--indeterminate { color: $primary; background: $panel; }
+#player-caps { margin-top: 1; }
+#menu-nav { margin-top: 1; }
+#stats { height: 1fr; }
+#level, #stream { width: 1fr; height: 100%; }
+#level-graph, #net-graph { margin-top: 1; }
+#queue {
+    width: 40;
+    height: 100%;
+    margin-left: 1;
+    padding: 0;
+    scrollbar-size-vertical: 1;
+    scrollbar-color: $primary 30%;
+    scrollbar-color-hover: $primary 60%;
+    scrollbar-background: $background;
+    /* one line per track: YouTube titles run long */
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
+}
+#queue:focus { border: round $primary; }
+PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
+PlayerScreen.-compact #player-body { padding: 0; }
+"""
 
 
-def set_accent(color: str) -> None:
-    """Recolor the UI accent live across the ui + art modules.
+class SessionClosed(BaseException):
+    """The app closed while the flow was using it (ctrl+c, or q while loading).
 
-    ACCENT is read by name at render time throughout this module (and by
-    art.render_welcome), so reassigning the module globals here recolors the
-    whole interface on the next redraw — no per-call plumbing needed.
+    A BaseException, like KeyboardInterrupt, so the flow's ``except Exception``
+    error handling unwinds past it (running its ``finally`` cleanup) instead
+    of reporting it.
     """
-    if color not in art.ACCENT_COLORS:
-        return
-    global ACCENT
-    ACCENT = color
-    art.ACCENT = color
-
-console = Console()
 
 
-def show_header():
-    """Clear screen and print styled header."""
-    console.clear()
-    console.print()
-    console.print(f"[bold {ACCENT}]  tunetape[/bold {ACCENT}] [dim]- Terminal Audio Player[/dim]")
-    console.print()
+class TunetapeApp(App):
+    """The whole session: screens come and go as the flow thread asks for them."""
 
+    TITLE = "tunetape"
+    CSS = CSS
+    # -compact pads less; the player's queue needs deck (62) + queue (42) + gutters.
+    HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (70, "-narrow"), (108, "-wide")]
+    BINDINGS = [Binding("ctrl+c,ctrl+q", "quit_session", "Quit", show=False, priority=True)]
 
-def show_welcome(frame: int = 0):
-    """Clear screen and display the cassette with the title baked in."""
-    console.clear()
-    console.print(art.render_welcome())
-    console.print()
+    def __init__(self, flow):
+        super().__init__()
+        self._session_flow = flow
+        self._waiter = None  # (screen, event, box) of the screen the flow waits on
+        self._session_done = threading.Event()
+        self._session_thread = None
+        self.flow_error = None
 
+    # --- lifecycle ---------------------------------------------------------
 
-# --- btop-style boxed key-cap buttons --------------------------------------
+    def on_mount(self) -> None:
+        self.register_theme(TUNETAPE_THEME)
+        saved = config.get_setting("theme")
+        self.theme = saved if saved in self.available_themes else DEFAULT_THEME
 
-def key_cap(key: str, label: str) -> Panel:
-    """A small boxed key-cap: the key in the top border, label inside."""
-    return Panel(
-        label, title=str(key), box=box.SQUARE, border_style=ACCENT,
-        padding=(0, 1), expand=False,
-    )
+    def on_ready(self) -> None:
+        # Not on mount: call_from_thread needs the app fully running.
+        self._session_thread = threading.Thread(target=self._run_flow, name="tunetape-session",
+                                                daemon=True)
+        self._session_thread.start()
 
-
-def button_row(items) -> Columns:
-    """Lay a list of (key, label) caps side by side, wrapping as needed."""
-    return Columns([key_cap(k, l) for k, l in items], padding=(0, 1), expand=False)
-
-
-# Two rows of menu buttons: actions on top, utility keys below. A single "Play"
-# entry takes any supported URL (YouTube / Spotify / KHInsider) and auto-detects
-# the source; full descriptions are on the Help screen (_commands_table).
-_MENU_ROW1 = [
-    ("1", "Play"),
-    ("2", "History"),
-    ("3", "Discover"),
-    ("4", "Settings"),
-]
-_MENU_ROW2 = [
-    ("h", "Help"),
-    ("d", "Debug"),
-    ("q", "Quit"),
-]
-_MENU_ITEMS = _MENU_ROW1 + _MENU_ROW2
-_MENU_KEYS = {k for k, _ in _MENU_ITEMS}
-
-
-def _menu_button(key: str, label: str) -> Panel:
-    return Panel(
-        f"[bold {ACCENT}]{key}[/]  {label}", box=box.ROUNDED,
-        border_style=ACCENT, padding=(0, 1), expand=False,
-    )
-
-
-def _button_row(items) -> Table:
-    """One horizontal row of boxed buttons (single line, no wrapping)."""
-    grid = Table.grid(padding=(0, 1))
-    for _ in items:
-        grid.add_column()
-    grid.add_row(*[_menu_button(k, l) for k, l in items])
-    return grid
-
-
-def _menu_buttons_grid() -> Padding:
-    """Boxed menu buttons in two rows: [1 2 3] then [h d q]."""
-    rows = Group(_button_row(_MENU_ROW1), _button_row(_MENU_ROW2))
-    return Padding(rows, (0, 0, 0, 8))
-
-
-def _draw_menu():
-    """Render the welcome cassette + boxed menu buttons (scrolling, no clipping)."""
-    console.clear()
-    console.print(art.render_welcome())
-    console.print()
-    console.print(_menu_buttons_grid())
-    console.print()
-
-
-def _menu_fallback() -> str:
-    """Non-interactive fallback (no TTY): print once and read a line."""
-    _draw_menu()
-    try:
-        raw = input("  > ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "q"
-    return raw[:1] if raw and raw[0] in _MENU_KEYS else "q"
-
-
-def _menu_renderable(frame: int):
-    """The animated menu screen: shimmering tuna + two rows of boxed buttons."""
-    return Group(
-        art.render_welcome(frame),
-        Text(""),
-        _menu_buttons_grid(),
-        Text.from_markup("  [dim]› press a key[/dim]"),
-    )
-
-
-def main_menu_loop() -> str:
-    """Animated single-key main menu (the tuna shimmers). Returns 1/2/3/4/h/d/q."""
-    if not sys.stdin.isatty():
-        return _menu_fallback()
-
-    frame = 0
-    with keyboard.raw_mode():
-        console.clear()
-        with Live(console=console, refresh_per_second=15, screen=True) as live:
-            while True:
-                live.update(_menu_renderable(frame))
-                key = keyboard.poll_key(0.07)
-                if key is not None:
-                    if key == keyboard.INTERRUPT:  # Ctrl-C / Ctrl-D
-                        return "q"
-                    # Arrow/ESC/Enter tokens are multi-char and never in _MENU_KEYS.
-                    if len(key) == 1 and key.lower() in _MENU_KEYS:
-                        return key.lower()
-                frame += 1
-
-
-def read_key() -> str:
-    """Block for a single keypress and return it lowercased (no Enter needed).
-
-    Enter returns "" and Ctrl-C/Ctrl-D return "q" so callers can treat them as
-    back/quit; escape sequences (arrow keys) are swallowed and return "". Falls
-    back to a line read when stdin isn't a TTY (piped input / tests). For menus
-    whose choices are all single keys — no free text to type.
-    """
-    if not sys.stdin.isatty():
+    def _run_flow(self) -> None:
         try:
-            return input().strip().lower()[:1]
-        except (EOFError, KeyboardInterrupt):
-            return "q"
-    with keyboard.raw_mode():
-        key = keyboard.read_key_blocking()
-    if key == keyboard.INTERRUPT:  # Ctrl-C / Ctrl-D
-        return "q"
-    # Enter, ESC and arrow keys have no single-char command meaning here.
-    if len(key) != 1:
-        return ""
-    return key.lower()
+            self._session_flow()
+        except SessionClosed:
+            pass
+        except BaseException as exc:  # re-raised by run_session once the terminal is back
+            self.flow_error = exc
+            debug.exception("Session crashed", exc)
+        finally:
+            if not self._session_done.is_set():  # else the app is already on its way out
+                self._session_done.set()
+                try:
+                    self.call_from_thread(self.exit)
+                except RuntimeError:
+                    pass
+
+    def exit(self, *args, **kwargs) -> None:
+        self._session_done.set()
+        waiter, self._waiter = self._waiter, None
+        if waiter is not None:
+            waiter[1].set()  # no result: ask() raises SessionClosed in the flow
+        super().exit(*args, **kwargs)
+
+    @property
+    def closed(self) -> bool:
+        return self._session_done.is_set()
+
+    def watch_theme(self, _theme: str) -> None:
+        for screen in self.screen_stack:
+            if isinstance(screen, PlayerScreen) and screen.is_mounted:
+                screen.apply_gradient()
+
+    # --- called from the flow thread ---------------------------------------
+
+    def call(self, fn, *args):
+        """Run ``fn`` on the app's thread and return its result."""
+        if self.closed or not self.is_running:
+            raise SessionClosed
+        return self.call_from_thread(fn, *args)
+
+    def ask(self, build):
+        """Show the screen ``build()`` returns and block until it answers."""
+        done = threading.Event()
+        box = {}
+
+        def present():
+            screen = build()
+            self._waiter = (screen, done, box)
+            self._present(screen)
+
+        self.call(present)
+        while not done.wait(0.25):
+            if self.closed:
+                break
+        if "result" not in box:
+            raise SessionClosed
+        return box["result"]
+
+    def show_busy(self, message: str, detail: str = "") -> None:
+        """Show that the flow is working: on the player if one is up, else a busy screen."""
+
+        def busy():
+            top = self.flow_screen
+            if isinstance(top, PlayerScreen):
+                top.set_loading(message)
+            elif isinstance(top, BusyScreen):
+                top.set_message(message, detail)
+            else:
+                self._present(BusyScreen(message, detail))
+
+        self.call(busy)
+
+    # --- on the app's thread -----------------------------------------------
+
+    @property
+    def flow_screen(self):
+        """The topmost full screen (modals sit on top of it), if any."""
+        for screen in reversed(self.screen_stack[1:]):
+            if not isinstance(screen, ModalScreen):
+                return screen
+        return None
+
+    def _present(self, screen) -> None:
+        if screen in self.screen_stack:
+            return  # the player, reused for the next track
+        if isinstance(screen, ModalScreen):
+            self.push_screen(screen)
+            return
+        # Drop anything stacked over the current screen (the player's help).
+        while len(self.screen_stack) > 2:
+            self.pop_screen()
+        if len(self.screen_stack) > 1:
+            self.switch_screen(screen)
+        else:
+            self.push_screen(screen)
+
+    def answer(self, screen, result) -> None:
+        """A screen's answer: wake the flow if it is waiting on that screen."""
+        if isinstance(screen, ModalScreen) and screen.is_current:
+            self.pop_screen()
+        waiter = self._waiter
+        if waiter is None or waiter[0] is not screen:
+            return  # e.g. the player's help, which nobody waits on
+        self._waiter = None
+        waiter[2]["result"] = result
+        waiter[1].set()
+
+    def action_quit_session(self) -> None:
+        self.quit_session()
+
+    def quit_session(self) -> None:
+        """q / ctrl+c: let the waiting screen answer 'quit' so the flow winds down."""
+        waiter = self._waiter
+        if waiter is None or waiter[0].QUIT_RESULT is NO_QUIT:
+            self.exit()  # mid-load or on a modal: the flow stops at its next ask
+            return
+        screen = waiter[0]
+        while self.screen is not screen and len(self.screen_stack) > 2:
+            self.pop_screen()
+        screen.answer(screen.QUIT_RESULT)
+
+
+_app: Optional[TunetapeApp] = None
+
+
+def run_session(flow) -> None:
+    """Run ``flow`` (the whole session) with the Textual app on screen."""
+    global _app
+    app = _app = TunetapeApp(flow)
+    try:
+        app.run()
+    finally:
+        app._session_done.set()
+        if app._session_thread is not None:
+            # Give the flow a moment to stop mpv and save the volume.
+            app._session_thread.join(timeout=3)
+        _app = None
+    saved = config.get_setting("theme")
+    if app.theme and app.theme != saved:
+        config.set_setting("theme", app.theme)  # e.g. picked from the ctrl+p palette
+    if app.flow_error is not None:
+        raise app.flow_error
+
+
+def _ask(build):
+    if _app is None:
+        raise RuntimeError("tunetape's interface is not running.")
+    return _app.ask(build)
+
+
+def _notify(message: str, severity: str = "information") -> None:
+    if _app is not None:
+        _app.call(_app.notify, message, severity=severity)
+
+
+# --- menu and prompts ------------------------------------------------------
+
+def main_menu() -> str:
+    """The main menu. Returns '1'-'4', 'h', 'd' or 'q'."""
+    return _ask(MenuScreen)
+
+
+def _detect_source(text: str) -> Content:
+    """A hint under the URL box naming the source a pasted link belongs to."""
+    from tunetape import khinsider, player, spotify
+
+    names = [
+        (spotify.is_spotify_url, "Spotify"),
+        (player.is_youtube_playlist_url, "YouTube playlist"),
+        (player.is_youtube_url, "YouTube video"),
+        (khinsider.is_khinsider_url, "KHInsider album"),
+    ]
+    for matches, name in names:
+        if matches(text):
+            return Content.from_markup("[$success]●[/] $name", name=name)
+    return Content.from_markup("[$warning]●[/] not a YouTube, Spotify or KHInsider link")
 
 
 def prompt_url() -> str:
-    """Prompt user for a media URL (YouTube / Spotify / KHInsider, auto-detected)."""
-    console.print("  Paste a YouTube, Spotify, or KHInsider URL:")
-    console.print("  [dim]YouTube video or playlist · Spotify track or playlist · KHInsider album[/dim]")
-    console.print("  [dim]enter to play  ·  b back  ·  q quit[/dim]")
-    console.print()
-    try:
-        url = input("  > ")
-    except (EOFError, KeyboardInterrupt):
-        return ""
-    return url.strip()
+    """Ask for a media URL. Returns it, '' for back or 'q' to quit."""
+    return _ask(lambda: PromptScreen(
+        "Play", "Play a URL",
+        Content("Paste a YouTube, Spotify or KHInsider link."),
+        placeholder="https://…", submit="play",
+        note=Content("YouTube video or playlist · Spotify track or playlist · KHInsider album"),
+        detect=_detect_source,
+    ))
 
 
 def prompt_discover() -> str:
-    """Prompt for a free-text music request to hand to the AI. '' cancels."""
-    console.print(f"  [bold {ACCENT}]Discover[/bold {ACCENT}] [dim]· describe what you want to hear[/dim]")
-    console.print("  [dim]e.g. \"upbeat 80s synthwave\" · \"calm piano for focus\" · \"90s hip hop classics\"[/dim]")
-    console.print("  [dim]enter to ask  ·  b back  ·  q quit[/dim]")
-    console.print()
-    try:
-        text = input("  > ")
-    except (EOFError, KeyboardInterrupt):
-        return ""
-    return text.strip()
+    """Ask for a free-text music request. Returns it, '' for back or 'q' to quit."""
+    return _ask(lambda: PromptScreen(
+        "Discover", "Discover",
+        Content("Describe what you want to hear, and an AI picks the songs."),
+        placeholder="upbeat 80s synthwave", submit="ask",
+        note=Content('e.g. "calm piano for focus" · "90s hip hop classics"'),
+    ))
 
 
 def show_ai_results(request: str, tracks: list) -> tuple:
-    """List AI-suggested tracks and let the user pick one to play.
-
-    Returns an (action, payload) tuple where action is 'play' (payload is the
-    chosen Track), 'back', or 'quit'.
-    """
-    console.print()
-    console.print(f"  [bold {ACCENT}]Suggestions[/bold {ACCENT}] [dim]for “{escape(request)}”[/dim]")
-    console.print()
-    for i, t in enumerate(tracks, 1):
-        console.print(f"  [bold]{i:>2}.[/bold] {escape(t.name)}")
-    console.print()
-    console.print(
-        "  [dim]number to play  ·  r new request  ·  b back  ·  q quit[/dim]"
-    )
-    console.print()
-    while True:
-        try:
-            raw = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return ("back", None)
-        if raw == "q":
-            return ("quit", None)
-        if raw in ("b", ""):
-            return ("back", None)
-        if raw == "r":
-            return ("research", None)
-        if raw.isdigit():
-            idx = int(raw) - 1
-            if 0 <= idx < len(tracks):
-                return ("play", tracks[idx])
-        console.print("  [dim]Invalid selection. Try again.[/dim]")
-
-
-def with_spinner(message: str, func, *args, **kwargs):
-    """Run a blocking ``func`` while showing an animated spinner.
-
-    Rich's ``console.status`` refreshes the spinner on its own thread, so it
-    keeps animating while ``func`` blocks (e.g. a yt-dlp subprocess call) on the
-    main thread. Returns whatever ``func`` returns; exceptions propagate.
-    """
-    debug.log(message)
-    with console.status(f"[{ACCENT}]{message}[/{ACCENT}]", spinner="dots"):
-        return func(*args, **kwargs)
-
-
-def show_error(message: str):
-    """Render error panel and wait for keypress."""
-    debug.log(message, "ERROR")
-    console.print()
-    console.print(Panel(
-        f"[red]{escape(message)}[/red]",
-        title="[bold red]Error[/bold red]",
-        border_style="red",
-        padding=(1, 2),
-    ))
-    console.print()
-    console.print("  [dim]Press Enter to go back...[/dim]")
-    try:
-        input()
-    except (EOFError, KeyboardInterrupt):
-        pass
+    """Pick from AI suggestions. Returns ('play', track), ('research', None), ('back', None) or ('quit', None)."""
+    return _ask(lambda: SuggestionsScreen(request, tracks))
 
 
 def show_ai_unavailable(message: str) -> str:
-    """Explain why AI discovery can't run and offer a jump to its settings.
-
-    Shown when the Discover screen's pre-flight check fails, so the user finds
-    out before typing a request. Returns 's' (open AI settings), 'back', or
-    'quit'.
-    """
+    """Explain why AI discovery can't run. Returns 's' (open AI settings), 'back' or 'quit'."""
     debug.log(message, "ERROR")
-    console.print()
-    console.print(Panel(
-        f"[yellow]{escape(message)}[/yellow]",
-        title=f"[bold {ACCENT}]AI discovery unavailable[/]",
-        border_style="yellow",
-        padding=(1, 2),
-    ))
-    console.print()
-    console.print("  [dim]s open AI settings  ·  b back  ·  q quit[/dim]")
-    console.print()
-    try:
-        raw = input("  > ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return "back"
-    if raw == "q":
-        return "quit"
-    if raw == "s":
-        return "s"
-    return "back"
+    return _ask(lambda: NoticeScreen("AI discovery unavailable", message))
 
 
-# Braille spinner + trailing-dot cycle for the verification screen.
-_VERIFY_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-_VERIFY_DOTS = ("   ", ".  ", ".. ", "...")
+# --- waiting and errors ----------------------------------------------------
+
+def with_spinner(message: str, func, *args, **kwargs):
+    """Run a blocking ``func`` while the app shows ``message``; returns its result.
+
+    The app animates on its own thread, so this just runs ``func`` here on the
+    flow thread. Without a running app (tests) it simply calls ``func``.
+    """
+    debug.log(message)
+    app = _app
+    if app is None:
+        return func(*args, **kwargs)
+    app.show_busy(message)
+    result = func(*args, **kwargs)
+    if app.closed:
+        raise SessionClosed  # quit while loading: don't go on to play it
+    return result
 
 
-def _verify_renderable(frame: int):
-    """A frame of the 'verifying AI connection' animation (cassette + spinner)."""
-    glyph = _VERIFY_SPINNER[frame % len(_VERIFY_SPINNER)]
-    dots = _VERIFY_DOTS[(frame // 3) % len(_VERIFY_DOTS)]
-    return Group(
-        art.render_welcome(frame),
-        Text(""),
-        Text.from_markup(f"  [{ACCENT}]{glyph}[/] Verifying AI connection{dots}"),
-        Text.from_markup("  [dim]reaching the model endpoint…[/dim]"),
-    )
+def show_error(message: str) -> None:
+    """Show an error over the current screen and wait for the user to close it."""
+    debug.log(message, "ERROR")
+    if _app is None:
+        print(f"tunetape: {message}", file=sys.stderr)
+        return
+    _ask(lambda: ErrorModal(message))
 
 
-def _verify_result_renderable(ok: bool, detail: str):
-    """The final held frame: a green ✓ (with the model) or a yellow ✗ (reason)."""
-    if ok:
-        status = Text.from_markup(
-            f"  [green]✓ Connected[/green] [dim]· {escape(detail)} responded.[/dim]"
-        )
-    else:
-        status = Text.from_markup(f"  [yellow]✗ {escape(detail)}[/yellow]")
-    return Group(art.render_welcome(0), Text(""), status)
+def confirm(question: str) -> bool:
+    """A yes/no question."""
+    return _ask(lambda: ConfirmModal(question))
 
 
 def verify_ai_connection(check=None) -> tuple:
-    """Run the AI connection check behind an animated screen. Returns (ok, detail).
+    """Run the AI connection check behind the busy screen. Returns (ok, detail).
 
-    ``check`` (default ai.check_connection) runs on a background thread while the
-    cassette animates, so the unavoidable network round-trip reads as a step
-    rather than a freeze. ``detail`` is the model id on success or a user-facing
-    error message on failure. Shared by the Discover pre-flight and
-    Settings → Test connection. Falls back to a plain blocking call when stdout
-    isn't a TTY.
+    ``detail`` is the model id on success or a user-facing error message on
+    failure. Shared by the Discover pre-flight and Settings → Test connection.
     """
     check = check or ai.check_connection
-    box_ = {}
+    app = _app
+    if app is not None:
+        app.show_busy("Verifying AI connection…", "reaching the model endpoint…")
+    try:
+        result = (True, check())
+    except (RuntimeError, ConnectionError) as e:
+        result = (False, str(e))
+    except Exception as e:  # a surprise must not leave the spinner up
+        result = (False, str(e) or "Unexpected error during verification.")
+    if app is not None:
+        def hold():
+            top = app.flow_screen
+            if isinstance(top, BusyScreen):
+                top.finish(*result)
 
-    def _run():
-        try:
-            box_["result"] = (True, check())
-        except (RuntimeError, ConnectionError) as e:
-            box_["result"] = (False, str(e))
-        except Exception as e:  # never let a surprise hang the animation
-            box_["result"] = (False, str(e) or "Unexpected error during verification.")
+        app.call(hold)
+        time.sleep(0.9)  # long enough to read the ✓/✗ before moving on
+    return result
 
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
 
-    if not sys.stdout.isatty():
-        worker.join()
-        return box_["result"]
-
-    frame = 0
-    with Live(console=console, refresh_per_second=15, screen=True) as live:
-        while worker.is_alive():
-            live.update(_verify_renderable(frame))
-            worker.join(timeout=1 / 15)  # animate at ~15fps until the check returns
-            frame += 1
-        ok, detail = box_["result"]
-        live.update(_verify_result_renderable(ok, detail))
-        time.sleep(0.9)  # hold the ✓/✗ long enough to read before moving on
-    return box_["result"]
-
+# --- history ---------------------------------------------------------------
 
 def _humanize_time(iso_str) -> str:
     """Render an ISO timestamp as a coarse 'time ago' string."""
@@ -377,9 +477,7 @@ def _humanize_time(iso_str) -> str:
         return "—"
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    secs = int((datetime.now(timezone.utc) - dt).total_seconds())
-    if secs < 0:
-        secs = 0
+    secs = max(int((datetime.now(timezone.utc) - dt).total_seconds()), 0)
     if secs < 60:
         return "just now"
     if secs < 3600:
@@ -394,188 +492,177 @@ def _humanize_time(iso_str) -> str:
     return f"{days // 365}y ago"
 
 
-# Short source tags shown in the Recently-played list.
+# Source tags shown in the Recently-played list, with the colour of each.
 _HISTORY_TAGS = {
-    "youtube": "YT",
-    "youtube_playlist": "PL",
-    "spotify": "SP",
-    "khinsider": "KH",
-    "ai": "AI",
-    "ai_search": "AI",
+    "youtube": ("YT", "$error"),
+    "youtube_playlist": ("PL", "$error"),
+    "spotify": ("SP", "$success"),
+    "khinsider": ("KH", "$warning"),
+    "ai": ("AI", "$accent"),
+    "ai_search": ("AI", "$accent"),
 }
 
 
-def show_history(entries: list) -> tuple:
-    """Render the recently-played list and return an (action, payload) tuple.
-
-    action is one of:
-      'play'   -> payload is the selected entry dict
-      'delete' -> payload is the url to remove
-      'clear'  -> payload is None
-      'back'   -> payload is None
-    """
-    console.print()
-    console.print(f"  [bold {ACCENT}]Recently played[/bold {ACCENT}]")
-    console.print()
-    for i, e in enumerate(entries, 1):
-        tag = _HISTORY_TAGS.get(e.get("type"), "??")
-        title = escape(str(e.get("title", "Unknown")))
-        plays = e.get("play_count", 1)
-        when = _humanize_time(e.get("last_played"))
-        extra = ""
-        tc = e.get("track_count")
-        if e.get("type") == "ai_search":
-            # A re-runnable Discover request, not a single track.
-            extra = " [dim]· search[/dim]"
-        elif isinstance(tc, int) and tc > 1:
-            li = int(e.get("last_index", 0) or 0)
-            extra = f" [dim]· resume {li + 1}/{tc}[/dim]"
-        console.print(
-            f"  [bold]{i:>2}.[/bold] [dim]\\[{tag}][/dim] {title}{extra}"
-            f"  [dim]· {plays}× · {when}[/dim]"
-        )
-    console.print()
-    console.print(
-        "  [dim]number to play  ·  d <n> delete  ·  c clear all  ·  b back  ·  q quit[/dim]"
+def _history_row(entry: dict) -> Content:
+    tag, color = _HISTORY_TAGS.get(entry.get("type"), ("??", "$foreground"))
+    details = []
+    tc = entry.get("track_count")
+    if entry.get("type") == "ai_search":
+        details.append("search")  # a re-runnable Discover request, not one track
+    elif isinstance(tc, int) and tc > 1:
+        details.append(f"resume {int(entry.get('last_index', 0) or 0) + 1}/{tc}")
+    plays = entry.get("play_count", 1)
+    details.append(f"played {plays}×")
+    details.append(_humanize_time(entry.get("last_played")))
+    return Content.from_markup(
+        f"[b {color}]$tag[/]  $title\n    [$foreground 50%]$details[/]",
+        tag=tag, title=str(entry.get("title", "Unknown")), details=" · ".join(details),
     )
-    console.print()
-    while True:
-        try:
-            raw = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return ("back", None)
-        if raw == "q":
-            return ("quit", None)
-        if raw in ("b", ""):
-            return ("back", None)
-        if raw == "c":
-            return ("clear", None)
-        if raw.startswith("d"):
-            num = raw[1:].strip()
-            if num.isdigit():
-                idx = int(num) - 1
-                if 0 <= idx < len(entries):
-                    return ("delete", entries[idx].get("url"))
-        elif raw.isdigit():
-            idx = int(raw) - 1
-            if 0 <= idx < len(entries):
-                return ("play", entries[idx])
-        console.print("  [dim]Invalid selection. Try again.[/dim]")
+
+
+_history_at = 0  # keeps the highlight in place across deletes
+
+
+def show_history(entries: list) -> tuple:
+    """The recently-played list. Returns (action, payload): ('play', entry),
+    ('delete', url), ('clear', None), ('back', None) or ('quit', None)."""
+    global _history_at
+    rows = [_history_row(e) for e in entries]
+    action, payload = _ask(lambda: HistoryScreen(entries, rows, _history_at))
+    urls = [e.get("url") for e in entries]
+    if action == "delete" and payload in urls:
+        _history_at = urls.index(payload)
+    elif action == "play":
+        _history_at = 0  # it moves to the top
+    return action, payload
+
+
+# --- settings --------------------------------------------------------------
+
+def _state(on: bool, on_text: str = "on", off_text: str = "off") -> Content:
+    if on:
+        return Content.from_markup("[b $success]$t[/]", t=on_text)
+    return Content.from_markup("[$foreground 50%]$t[/]", t=off_text)
+
+
+def _value(text: str) -> Content:
+    return Content.from_markup("[$primary]$t[/]", t=text)
+
+
+_settings_at = {}  # remembers the highlighted row per settings screen
+
+
+def _options(name: str, build_screen, rows: list) -> tuple:
+    key, text = _ask(build_screen)
+    keys = [r.key for r in rows]
+    if key in keys:
+        _settings_at[name] = keys.index(key)
+    return key, text
 
 
 def show_settings(normalize_on: bool) -> str:
-    """Render the settings screen and return a choice ('1'/'2'/'3'/'b'/'q')."""
-    console.print()
-    console.print(f"  [bold {ACCENT}]Settings[/bold {ACCENT}]")
-    console.print()
-    state = "[green]on[/green]" if normalize_on else "[dim]off[/dim]"
-    console.print(f"  [bold]1.[/bold] Volume normalization: {state}")
-    console.print("     [dim]Evens out loudness across tracks and sources.[/dim]")
-    console.print(f"  [bold]2.[/bold] Accent color: [{ACCENT}]{ACCENT}[/{ACCENT}]")
-    console.print("     [dim]Recolor the whole interface — pick your vibe.[/dim]")
-    ai_state = "[green]configured[/green]" if ai.is_configured() else "[dim]not set[/dim]"
-    console.print(f"  [bold]3.[/bold] AI discovery: {ai_state}")
-    console.print("     [dim]Describe a vibe and let an AI find songs for you.[/dim]")
-    console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
-    console.print()
-    console.print("  [dim]› press a key[/dim]")
-    while True:
-        choice = read_key()  # single keypress — every option here is one key
-        if choice == "q":
-            return "q"
-        if choice in ("b", ""):  # b or Enter/Esc -> back
-            return "b"
-        if choice in ("1", "2", "3"):
-            return choice
-        # Ignore stray keys and keep waiting, like the main menu.
+    """The settings screen. Returns '1' / '2' / '3', 'b' (back) or 'q'."""
+    rows = [
+        Row("1", "Volume normalization", _state(normalize_on),
+            "Evens out loudness across tracks and sources."),
+        Row("2", "Theme", _value(_app.theme if _app else DEFAULT_THEME),
+            "Recolour the whole interface (or ctrl+p anywhere)."),
+        Row("3", "AI discovery", _state(ai.is_configured(), "configured", "not set"),
+            "Describe a vibe and let an AI find songs for you."),
+    ]
+    key, _ = _options("settings", lambda: OptionsScreen(
+        "Settings", "Settings", rows, highlight=_settings_at.get("settings", 0)), rows)
+    return key
 
 
-def _mask_key(key: str) -> str:
+def show_theme_picker() -> Optional[str]:
+    """Pick a theme with a live preview. Returns 'quit' to quit, else None (back)."""
+    app = _app
+    original = app.theme
+    themes = sorted(app.available_themes.values(), key=lambda t: t.name != DEFAULT_THEME)
+    action, name = _ask(lambda: ThemeScreen(themes, original))
+    if action == "save":
+        config.set_setting("theme", name)
+        return None
+    app.call(setattr, app, "theme", original)  # browsed but didn't pick: undo the preview
+    return "quit" if action == "quit" else None
+
+
+def _mask_key(key: str) -> Content:
     """Show only the tail of an API key so the screen never leaks the whole thing."""
     if not key:
-        return "[dim]not set[/dim]"
+        return _state(False, off_text="not set")
     tail = key[-4:] if len(key) >= 4 else key
-    return f"[green]set[/green] [dim]···{escape(tail)}[/dim]"
+    return Content.from_markup("[b $success]set[/] [$foreground 50%]···$tail[/]", tail=tail)
 
 
 def show_ai_settings() -> str:
     """Configure AI discovery (provider, key, model, endpoint, auth). Returns 'quit'/'back'."""
     while True:
-        show_welcome()
         prov = ai.provider()  # 'anthropic' | 'openai'
         is_openai = prov == "openai"
         env_var = "OPENAI_API_KEY" if is_openai else "ANTHROPIC_API_KEY"
         saved_key = config.get_setting("ai_api_key") or ""
-        env_key = os.environ.get(env_var, "")
-        model = (config.get_setting("ai_model") or "").strip() or ai.default_model()
-        base = (config.get_setting("ai_base_url") or "").strip() or ai.default_base_url()
+        saved_model = (config.get_setting("ai_model") or "").strip()
+        saved_base = (config.get_setting("ai_base_url") or "").strip()
+        model = saved_model or ai.default_model()
+        base = saved_base or ai.default_base_url()
         path = "/v1/chat/completions" if is_openai else "/v1/messages"
         is_bearer = ai.auth_mode() == "bearer"
 
-        console.print(f"  [bold {ACCENT}]AI discovery[/bold {ACCENT}]")
-        console.print("  [dim]Suggests songs from a text request. Works with Anthropic or any"
-                      " OpenAI-compatible endpoint (including local models).[/dim]")
-        console.print()
-        console.print(f"  [bold]1.[/bold] Provider: [{ACCENT}]{prov}[/{ACCENT}]")
-        console.print("     [dim]anthropic (Messages API) or openai (/v1/chat/completions — OpenAI, Ollama, …).[/dim]")
-        console.print(f"  [bold]2.[/bold] API key: {_mask_key(saved_key)}")
-        if not saved_key and env_key:
-            console.print(f"     [dim]Using {env_var} from your environment.[/dim]")
+        if not saved_key and os.environ.get(env_var):
+            key_note = f"Using {env_var} from your environment."
         else:
-            console.print(f"     [dim]Or set {env_var} — stored locally in config.[/dim]")
-        console.print(f"  [bold]3.[/bold] Model: [{ACCENT}]{escape(model)}[/{ACCENT}]")
-        console.print("     [dim]Any model id for the provider; blank resets to the default.[/dim]")
-        console.print(f"  [bold]4.[/bold] Endpoint: [{ACCENT}]{escape(base)}[/{ACCENT}]")
-        console.print(f"     [dim]Base URL — point at a gateway/proxy or local server; blank resets. POSTs to <base>{path}.[/dim]")
+            key_note = f"Or set {env_var}. Stored locally in config."
+        rows = [
+            Row("1", "Provider", _value(prov),
+                "anthropic (Messages API) or openai (/v1/chat/completions: OpenAI, Ollama, …)."),
+            Row("2", "API key", _mask_key(saved_key), key_note),
+            Row("3", "Model", _value(model),
+                "Any model id for the provider; blank resets to the default."),
+            Row("4", "Endpoint", _value(base),
+                f"Base URL of a gateway, proxy or local server; blank resets. POSTs to <base>{path}."),
+        ]
         if not is_openai:
-            auth_label = "Bearer token" if is_bearer else "x-api-key"
-            console.print(f"  [bold]5.[/bold] Auth: [{ACCENT}]{escape(auth_label)}[/{ACCENT}]")
-            console.print("     [dim]How the key is sent — x-api-key (Anthropic) or Bearer (proxies/OAuth).[/dim]")
+            rows.append(Row("5", "Auth", _value("Bearer token" if is_bearer else "x-api-key"),
+                            "How the key is sent: x-api-key (Anthropic) or Bearer (proxies, OAuth)."))
         if saved_key:
-            console.print("  [bold]c.[/bold] Clear saved key")
+            rows.append(Row("c", "Clear saved key", Content("")))
         if ai.is_configured():
-            console.print("  [bold]t.[/bold] Test connection")
-            console.print("     [dim]Send a tiny request to confirm the key + model + endpoint work.[/dim]")
-        console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
-        console.print()
-        try:
-            choice = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return "back"
+            rows.append(Row("t", "Test connection", Content(""),
+                            "Send a tiny request to confirm the key, model and endpoint work."))
+        edits = {
+            "2": Edit("API key", Content("Paste your API key (blank keeps the current one)."),
+                      password=True),
+            "3": Edit("Model", Content.from_markup(
+                "Model id. Blank for the default, [$primary]$m[/].", m=ai.default_model()),
+                placeholder=ai.default_model(), value=saved_model),
+            "4": Edit("Endpoint", Content.from_markup(
+                "Base URL. Blank for the default; tunetape POSTs to <base>$p.", p=path),
+                placeholder=ai.default_base_url(), value=saved_base),
+        }
+        intro = Content.from_markup(
+            "[$foreground 60%]Suggests songs from a text request. Works with Anthropic or any "
+            "OpenAI-compatible endpoint, local models included.[/]"
+        )
+        choice, text = _options("ai", lambda: OptionsScreen(
+            "Settings › AI discovery", "AI discovery", rows, intro=intro, edits=edits,
+            highlight=_settings_at.get("ai", 0)), rows)
 
         if choice == "q":
             return "quit"
-        if choice in ("b", ""):
+        if choice == "b":
             return "back"
         if choice == "1":
             # Two providers — flip between them.
             config.set_setting("ai_provider", "anthropic" if is_openai else "openai")
         elif choice == "2":
-            console.print()
-            console.print("  [dim]Paste your API key (blank to keep current):[/dim]")
-            try:
-                entered = input("  > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                entered = ""
-            if entered:
-                config.set_setting("ai_api_key", entered)
+            if text:
+                config.set_setting("ai_api_key", text)
         elif choice == "3":
-            console.print()
-            console.print(f"  [dim]Model id (blank for default {escape(ai.default_model())}):[/dim]")
-            try:
-                entered = input("  > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                entered = ""
-            config.set_setting("ai_model", entered)
+            config.set_setting("ai_model", text or "")
         elif choice == "4":
-            console.print()
-            console.print(f"  [dim]Base URL (blank for default {escape(ai.default_base_url())}):[/dim]")
-            console.print(f"  [dim]tunetape POSTs to <base>{path}.[/dim]")
-            try:
-                entered = input("  > ").strip()
-            except (EOFError, KeyboardInterrupt):
-                entered = ""
-            config.set_setting("ai_base_url", entered)
+            config.set_setting("ai_base_url", text or "")
         elif choice == "5" and not is_openai:
             # Two modes only — flip between them.
             config.set_setting("ai_auth_mode", "x-api-key" if is_bearer else "bearer")
@@ -583,331 +670,79 @@ def show_ai_settings() -> str:
             config.set_setting("ai_api_key", "")
         elif choice == "t" and ai.is_configured():
             ok, detail = verify_ai_connection()
-            show_welcome()
             if ok:
-                console.print(f"  [green]✓ Connected[/green] [dim]· {escape(detail)} responded.[/dim]")
+                _notify(f"Connected · {detail} responded.")
             else:
-                console.print(f"  [red]✗ {escape(detail)}[/red]")
-            console.print()
-            console.print("  [dim]Press Enter to continue…[/dim]")
-            try:
-                input()
-            except (EOFError, KeyboardInterrupt):
-                pass
+                _notify(detail, "error")
 
 
-def show_color_picker():
-    """Live accent-color picker. Returns 'quit' to quit, else None (back)."""
+# --- help and debug --------------------------------------------------------
+
+def show_help() -> Optional[str]:
+    """The key reference. Returns 'quit' to quit, else None (back)."""
+    return _ask(HelpModal)
+
+
+def show_debug() -> Optional[str]:
+    """The Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
+    from tunetape.player import find_executable
+
     while True:
-        current = config.get_setting("accent_color")
-        show_welcome()  # the tuna redraws in the current accent — instant preview
-        console.print(f"  [bold {ACCENT}]Accent color[/bold {ACCENT}]")
-        console.print("  [dim]Pick a number to recolor the interface.[/dim]")
-        console.print()
-        for i, c in enumerate(art.ACCENT_COLORS, 1):
-            mark = "  [dim]← current[/dim]" if c == current else ""
-            console.print(f"  [bold]{i}.[/bold] [{c}]{c}[/{c}] [{c}]████████[/{c}]{mark}")
-        console.print("  [bold]b.[/bold] Back    [bold]q.[/bold] Quit")
-        console.print()
-        try:
-            raw = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw == "q":
-            return "quit"
-        if raw in ("b", ""):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(art.ACCENT_COLORS):
-            chosen = art.ACCENT_COLORS[int(raw) - 1]
-            set_accent(chosen)
-            config.set_setting("accent_color", chosen)
-        else:
-            console.print("  [dim]Invalid selection.[/dim]")
+        def found(name: str) -> str:
+            return "[b $success]ok[/]" if find_executable(name) else "[b $error]missing[/]"
 
-
-def _commands_table() -> Table:
-    """A two-column table of every command, grouped by screen."""
-    table = Table.grid(padding=(0, 3))
-    table.add_column(justify="right", style=f"bold {ACCENT}", no_wrap=True)
-    table.add_column()
-    rows = [
-        (f"[{ACCENT2}]Menu[/]", ""),
-        ("1", "Play a URL — YouTube / Spotify / KHInsider"),
-        ("2", "Recently played"),
-        ("3", "Discover — describe a vibe, AI finds songs"),
-        ("4", "Settings"),
-        ("d", "Debug / Logs"),
-        ("", ""),
-        (f"[{ACCENT2}]Player[/]", ""),
-        ("space", "Play / pause"),
-        ("← / →", "Seek −/+ 10s"),
-        (", / .", "Seek −/+ 30s"),
-        ("↑ / ↓ , + / −", "Volume"),
-        ("m", "Mute"),
-        ("n / p", "Next / previous track"),
-        ("h", "Toggle help"),
-        ("", ""),
-        (f"[{ACCENT2}]Everywhere[/]", ""),
-        ("b", "Back (one screen)"),
-        ("q", "Quit tunetape"),
-        ("enter", "Select / confirm"),
-    ]
-    for left, right in rows:
-        table.add_row(left, right)
-    return table
-
-
-def show_help():
-    """Render the command reference. Returns 'quit' to quit, else None (back)."""
-    console.clear()
-    console.print(art.render_welcome())
-    console.print(Panel(
-        _commands_table(),
-        title=f"[bold {ACCENT}]Help · Commands[/]",
-        border_style=ACCENT,
-        padding=(1, 3),
-        expand=False,
-    ))
-    console.print()
-    console.print("  [dim]enter or b to go back  ·  q to quit[/dim]")
-    try:
-        raw = input("  > ").strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        return None
-    return "quit" if raw == "q" else None
-
-
-def show_debug():
-    """Render the Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
-    while True:
-        console.clear()
-        console.print()
-        console.print(f"  [bold {ACCENT}]Debug / Logs[/]  [dim]· this session[/dim]")
-        console.print()
-        mpv = "[green]ok[/green]" if find_executable("mpv") else "[red]missing[/red]"
-        ytdlp = "[green]ok[/green]" if find_executable("yt-dlp") else "[red]missing[/red]"
-        console.print(
-            f"  [dim]tunetape[/dim] {escape(__version__)}   "
-            f"[dim]mpv[/dim] {mpv}   [dim]yt-dlp[/dim] {ytdlp}"
+        about = Content.from_markup(
+            f"[$foreground 60%]tunetape[/] $v   [$foreground 60%]mpv[/] {found('mpv')}"
+            f"   [$foreground 60%]yt-dlp[/] {found('yt-dlp')}\n"
+            "[$foreground 60%]data dir[/] $dir",
+            v=__version__, dir=paths.data_dir(),
         )
-        console.print(f"  [dim]data dir[/dim] {escape(paths.data_dir())}")
-        console.print()
-        records = debug.entries()
-        if not records:
-            console.print("  [dim]No events logged yet this session.[/dim]")
-        else:
-            for ts, level, msg in records[-200:]:
-                color = {"ERROR": "red", "WARN": "yellow", "WARNING": "yellow"}.get(level, "dim")
-                try:
-                    stamp = ts.astimezone().strftime("%H:%M:%S")
-                except (ValueError, OSError):
-                    stamp = "--:--:--"
-                console.print(
-                    f"  [dim]{stamp}[/dim] [{color}]{level:<5}[/{color}] {escape(msg)}"
-                )
-        console.print()
-        console.print("  [dim]c clear  ·  b back  ·  q quit[/dim]")
-        try:
-            raw = input("  > ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw == "q":
+        lines = []
+        for ts, level, msg in debug.entries()[-200:]:
+            color = {"ERROR": "$error", "WARN": "$warning", "WARNING": "$warning"}.get(
+                level, "$foreground 50%")
+            try:
+                stamp = ts.astimezone().strftime("%H:%M:%S")
+            except (ValueError, OSError):
+                stamp = "--:--:--"
+            lines.append(Content.from_markup(
+                f"[$foreground 50%]$stamp[/] [{color}]$level[/] $msg",
+                stamp=stamp, level=f"{level:<5}", msg=msg,
+            ))
+        log = Content("\n").join(lines) if lines else Content.from_markup(
+            "[$foreground 50%]No events logged yet this session.[/]")
+        result = _ask(lambda: DebugScreen(about, log))
+        if result == "quit":
             return "quit"
-        if raw in ("b", ""):
+        if result != "c":
             return None
-        if raw == "c":
-            debug.clear()
+        debug.clear()
 
 
-def _format_time(seconds: float) -> str:
-    """Format seconds as mm:ss."""
-    if seconds < 0:
-        seconds = 0
-    m = int(seconds) // 60
-    s = int(seconds) % 60
-    return f"{m:02d}:{s:02d}"
+# --- the player ------------------------------------------------------------
+
+def play(title: str, controller, playlist_info: dict = None, *, source: str = None,
+         subtitle: str = None, tracks: list = None) -> str:
+    """Play on the player screen until the user leaves or the track ends.
+
+    Returns 'menu', 'quit', 'next_track', 'prev_track' or 'jump_track:<n>'.
+    The next track of the same album reuses the screen already up.
+    """
+    def build():
+        top = _app.flow_screen
+        if isinstance(top, PlayerScreen) and tracks and top.tracks == tracks:
+            top.load(title, controller, playlist_info)
+            return top
+        return PlayerScreen(title, controller, playlist_info, source=source,
+                            subtitle=subtitle, tracks=tracks)
+
+    return _ask(build)
 
 
-def _build_progress_bar(position: float, duration: float, width: int = 40) -> str:
-    """Build a text progress bar."""
-    if duration <= 0:
-        fraction = 0.0
-    else:
-        fraction = min(max(position / duration, 0.0), 1.0)
-    filled = int(width * fraction)
-    return f"[{ACCENT}]" + "\u2501" * filled + f"[/{ACCENT}][dim]" + "\u2501" * (width - filled) + "[/dim]"
-
-
-def _volume_bar(volume: float, muted: bool, width: int = 12) -> str:
-    """Build a YouTube-style volume meter: 'Vol [\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591] 75%' markup."""
-    pct = int(round(volume))
-    if muted:
-        bar = "[dim]" + "\u2591" * width + "[/dim]"
-        return f"[dim]Vol[/dim] {bar} [yellow]muted[/yellow]"
-    frac = min(max(volume / 100.0, 0.0), 1.0)
-    filled = int(round(width * frac))
-    bar = f"[{ACCENT}]" + "\u2588" * filled + f"[/{ACCENT}][dim]" + "\u2591" * (width - filled) + "[/dim]"
-    return f"[dim]Vol[/dim] {bar} {pct}%"
-
-
-class PlayerUI:
-    """TUI player with keyboard controls and live display."""
-
-    def __init__(self, title: str, controller, playlist_info: dict = None):
-        # [#12] Escape Rich markup in title to prevent injection
-        self.title = escape(title)
-        self.controller = controller
-        self.playlist_info = playlist_info
-        self._result = "menu"
-        self._stop = threading.Event()
-        self._result_lock = threading.Lock()
-        self._display_ready = threading.Event()
-        self._display_error = None
-        self._show_help = False
-
-    def _set_result(self, value: str):
-        """Thread-safe first-writer-wins result setter."""
-        with self._result_lock:
-            if not self._stop.is_set():
-                self._result = value
-                self._stop.set()
-
-    def run(self) -> str:
-        """Run the player UI. Returns 'menu', 'quit', 'next_track', or 'prev_track'."""
-        # [#13] Check for TTY before entering raw mode
-        if not sys.stdin.isatty():
-            raise RuntimeError("tunetape requires an interactive terminal.")
-
-        # [#7] Non-daemon thread so Live.__exit__ runs on shutdown
-        display_thread = threading.Thread(target=self._display_loop)
-        display_thread.start()
-
-        # Wait for display thread to enter Live context before setting raw mode.
-        # This avoids a race where raw mode is set before Live has initialised.
-        self._display_ready.wait(timeout=3)
-
-        # keyboard.raw_mode() re-enables OPOST on POSIX so Rich's \n still maps
-        # to \r\n (otherwise the player text staircases off-screen); on Windows
-        # it's a no-op. Arrow keys arrive as keyboard.UP/DOWN/LEFT/RIGHT tokens.
-        with keyboard.raw_mode():
-            while not self._stop.is_set():
-                # [#8] Poll with a timeout so we can re-check the _stop flag.
-                ch = keyboard.poll_key(0.5)
-                if ch is None:
-                    continue
-
-                if ch == " ":
-                    self.controller.toggle_pause()
-                elif ch == "q":
-                    self._set_result("quit")
-                elif ch == "b":
-                    self._set_result("menu")
-                elif ch == "n" and self.playlist_info and self.playlist_info.get("has_next"):
-                    self._set_result("next_track")
-                elif ch == "p" and self.playlist_info and self.playlist_info.get("has_prev"):
-                    self._set_result("prev_track")
-                elif ch == ".":
-                    self.controller.seek(30)
-                elif ch == ",":
-                    self.controller.seek(-30)
-                elif ch in ("+", "="):
-                    self.controller.set_volume_relative(5)
-                elif ch in ("-", "_"):
-                    self.controller.set_volume_relative(-5)
-                elif ch == "m":
-                    self.controller.toggle_mute()
-                elif ch == "h":
-                    self._show_help = not self._show_help
-                elif ch == keyboard.RIGHT:
-                    self.controller.seek(10)
-                elif ch == keyboard.LEFT:
-                    self.controller.seek(-10)
-                elif ch == keyboard.UP:
-                    self.controller.set_volume_relative(5)
-                elif ch == keyboard.DOWN:
-                    self.controller.set_volume_relative(-5)
-                elif ch == keyboard.INTERRUPT:  # Ctrl+C / Ctrl-D
-                    self._set_result("quit")
-
-        self._stop.set()
-        display_thread.join(timeout=3)
-        return self._result
-
-    def _player_controls(self):
-        """Boxed control buttons, or the full help table when help is toggled."""
-        if self._show_help:
-            return Panel(
-                _commands_table(), title=f"[bold {ACCENT}]Help \u00b7 Commands[/]",
-                border_style=ACCENT, padding=(0, 2), expand=False,
-            )
-        items = [
-            ("space", "play/pause"),
-            ("\u25c4 \u25ba", "seek 10s"),
-            (", .", "seek 30s"),
-            ("\u2191 \u2193", "volume"),
-            ("m", "mute"),
-        ]
-        if self.playlist_info:
-            if self.playlist_info.get("has_next"):
-                items.append(("n", "next"))
-            if self.playlist_info.get("has_prev"):
-                items.append(("p", "prev"))
-        items += [("h", "help"), ("b", "back"), ("q", "quit")]
-        return Padding(button_row(items), (0, 0, 0, 2))
-
-    def _display_loop(self):
-        """Poll controller and render the player display."""
-        # [#7] Wrap in try/finally so _stop is always set if display thread crashes
-        try:
-            # Force a clean console for the Live display
-            console.clear()
-            with Live(console=console, refresh_per_second=2, screen=True) as live:
-                self._display_ready.set()
-                while not self._stop.is_set():
-                    if not self.controller.is_alive():
-                        if self.playlist_info and self.playlist_info.get("has_next"):
-                            self._set_result("next_track")
-                        else:
-                            self._set_result("menu")
-                        break
-
-                    try:
-                        position = self.controller.get_position()
-                        duration = self.controller.get_duration()
-                        paused = self.controller.is_paused()
-                        volume = self.controller.get_volume()
-                        muted = self.controller.is_muted()
-                    except Exception:
-                        self._set_result("menu")
-                        break
-
-                    pos_str = _format_time(position)
-                    dur_str = _format_time(duration)
-                    bar = _build_progress_bar(position, duration)
-                    status = "[yellow]Paused[/yellow]" if paused else "[green]Playing[/green]"
-                    vol_str = _volume_bar(volume, muted)
-
-                    track_line = ""
-                    if self.playlist_info:
-                        track_line = f"  [dim]Track {self.playlist_info['track_label']}[/dim]\n"
-
-                    info = Text.from_markup(
-                        f"\n  [bold {ACCENT}]tunetape[/bold {ACCENT}] [dim]\u00b7 Terminal Audio Player[/dim]\n"
-                        f"\n"
-                        f"  [bold]Now Playing:[/bold] {self.title}\n"
-                        f"{track_line}"
-                        f"\n"
-                        f"  {pos_str} {bar} {dur_str}\n"
-                        f"\n"
-                        f"  > {status}   {vol_str}\n"
-                    )
-                    display = Group(info, self._player_controls())
-
-                    live.update(display)
-                    time.sleep(0.5)
-        except Exception as exc:
-            self._display_error = exc
-            debug.exception("Player display loop crashed", exc)
-        finally:
-            self._display_ready.set()
-            self._stop.set()
+__all__ = [
+    "SessionClosed", "TunetapeApp", "run_session", "main_menu", "prompt_url",
+    "prompt_discover", "show_ai_results", "show_ai_unavailable", "with_spinner",
+    "show_error", "confirm", "verify_ai_connection", "show_history", "show_settings",
+    "show_theme_picker", "show_ai_settings", "show_help", "show_debug", "play",
+    "format_time", "save_terminal_state", "restore_terminal_state",
+]

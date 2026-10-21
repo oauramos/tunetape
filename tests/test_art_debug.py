@@ -1,13 +1,33 @@
 from tunetape import art, debug, ui
 
 
-def test_cassette_is_static_multiline():
-    base = art.render_cassette()
-    assert "\n" in base and base.strip()  # non-empty, multi-line art
-    # The frame/spinning args are accepted for compatibility but ignored.
-    assert art.render_cassette(0) == base
-    assert art.render_cassette(5, spinning=True) == base
-    assert art.render_cassette(spinning=False) == base
+def test_tuna_grids_are_rectangular():
+    for pixels in (art.TUNA_LARGE, art.TUNA_SMALL):
+        assert len(pixels) % 2 == 0  # two pixel rows per cell row
+        assert len({len(row) for row in pixels}) == 1
+        assert set("".join(pixels)) <= {".", "o", "b", "f"}
+
+
+def test_tuna_art_sizes_match_their_render():
+    for name, drawing in art.TUNA_ART.items():
+        lines = drawing.render(frame=3, shine=10).plain.split("\n")
+        assert len(lines) == drawing.height, name
+        assert {len(line) for line in lines} == {drawing.width}, name
+
+
+def test_ascii_tuna_keeps_its_shape_with_the_title():
+    lines = art.ascii_tuna(4).plain.split("\n")
+    assert len(lines) == art.ASCII_HEIGHT
+    assert {len(line) for line in lines} == {art.ASCII_WIDTH}
+    assert "Welcome to TuneTape" in lines[7]
+    # Outside the label window the art is untouched.
+    assert lines[7][:28] == art.ASCII_LINES[7][:28]
+    assert lines[7][61:].rstrip() == art.ASCII_LINES[7][61:].rstrip()
+
+
+def test_reels_turn_between_frames():
+    tuna = art.TUNA_ART["small"]
+    assert tuna.render(0).plain != tuna.render(1).plain
 
 
 def test_debug_ring_buffer():

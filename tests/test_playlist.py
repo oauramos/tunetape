@@ -47,3 +47,16 @@ def test_total_tracks():
     pl = Playlist(_album(5))
     assert pl.total_tracks == 5
     pl.close()
+
+
+def test_jump_bounds():
+    pl = Playlist(_album(3))
+    pl.jump(2)
+    assert pl.current_index == 2
+    assert pl.track_label == "3/3"
+    with pytest.raises(IndexError):
+        pl.jump(3)
+    with pytest.raises(IndexError):
+        pl.jump(-1)
+    assert pl.current_index == 2
+    pl.close()

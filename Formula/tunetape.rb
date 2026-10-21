@@ -5,7 +5,7 @@
 #   2. Cut a GitHub release/tag (e.g. v0.4.0). Then update `url` below and run:
 #        curl -fsSL https://github.com/oauramos/tunetape/archive/refs/tags/v0.4.0.tar.gz | shasum -a 256
 #      and paste the digest into `sha256`.
-#   3. Refresh the resource blocks if `rich`'s dependency tree changed:
+#   3. Refresh the resource blocks if textual's dependency tree changed:
 #        brew update-python-resources Formula/tunetape.rb
 #   4. Copy this file into the tap repo (github.com/oauramos/homebrew-tunetape,
 #      under Formula/) so `brew install oauramos/tunetape/tunetape` works.
@@ -27,6 +27,11 @@ class Tunetape < Formula
   depends_on "python@3.12"
   depends_on "yt-dlp"       # required for YouTube playback
 
+  resource "textual" do
+    url "https://files.pythonhosted.org/packages/00/21/39a76b01bd5eea82a04baaca7580e105d8c59450df03998345bb2cfb307b/textual-8.2.8.tar.gz"
+    sha256 "3f106a9fbc73e39dd266c9712432087de78a6d644084c7c241d6a25c3169115b"
+  end
+
   resource "rich" do
     url "https://files.pythonhosted.org/packages/e9/67/cae617f1351490c25a4b8ac3b8b63a4dda609295d8222bad12242dfdc629/rich-14.3.4.tar.gz"
     sha256 "817e02727f2b25b40ef56f5aa2217f400c8489f79ca8f46ea2b70dd5e14558a9"
@@ -45,6 +50,26 @@ class Tunetape < Formula
   resource "pygments" do
     url "https://files.pythonhosted.org/packages/c3/b2/bc9c9196916376152d655522fdcebac55e66de6603a76a02bca1b6414f6c/pygments-2.20.0.tar.gz"
     sha256 "6757cd03768053ff99f3039c1a36d6c0aa0b263438fcab17520b30a303a82b5f"
+  end
+
+  resource "linkify-it-py" do
+    url "https://files.pythonhosted.org/packages/45/98/7a1a5f31fd5c7ba93e963b168e244b8e3dd705b3d2a718e3c3307583bf57/linkify_it_py-2.2.0.tar.gz"
+    sha256 "907acd2d17ac1fbb9ddb62c8957ccbd6158cac602231a15c3b0cd1e215f03cee"
+  end
+
+  resource "mdit-py-plugins" do
+    url "https://files.pythonhosted.org/packages/59/fc/f8d0863f8862f25602c0404d75568e89fb6b4109804645e5cdfb1be5cf56/mdit_py_plugins-0.6.1.tar.gz"
+    sha256 "a2bca0f039f39dbd35fb74ae1b5f998608c437463371f0ff7f49a19a17a114d0"
+  end
+
+  resource "platformdirs" do
+    url "https://files.pythonhosted.org/packages/58/e6/d0abbb256b44e6a05748c6942511ff67db8dbb068de0c35b24bf1b395b09/platformdirs-4.13.5.tar.gz"
+    sha256 "05831adf87d392760f4b5c3a0a95579ab5a10b18b9b9bd43680dcb47544788a0"
+  end
+
+  resource "typing-extensions" do
+    url "https://files.pythonhosted.org/packages/f6/cc/6253133b5bb138fc3306cebfbda2c520f545d36b5be2c7255cc528bb45d6/typing_extensions-4.16.0.tar.gz"
+    sha256 "dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"
   end
 
   def install

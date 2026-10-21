@@ -25,7 +25,8 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Players",
 ]
 dependencies = [
-    "rich>=13.0,<15",
+    "textual>=8.2,<9",
+    "rich>=14.2,<15",  # comes with textual; widgets.py measures with rich.cells
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
