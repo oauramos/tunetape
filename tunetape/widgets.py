@@ -227,6 +227,73 @@ class LevelMeter(Widget):
         return Content("\n").join(lines)
 
 
+MARQUEE_GAP = "   ·   "
+
+
+def marquee_window(text: str, width: int, offset: int, gap: str = MARQUEE_GAP) -> str:
+    """``width`` cells of ``text`` looped with ``gap``, starting ``offset`` characters in.
+
+    Text that fits comes back whole. Wide characters (CJK, emoji) count two
+    cells; one that would straddle the edge becomes a space instead.
+    """
+    if cell_len(text) <= width:
+        return text
+    loop = text + gap
+    out, used, i = [], 0, offset % len(loop)
+    while used < width:
+        char = loop[i % len(loop)]
+        size = cell_len(char)
+        if used + size > width:
+            out.append(" " * (width - used))
+            break
+        out.append(char)
+        used += size
+        i += 1
+    return "".join(out)
+
+
+class Marquee(Widget):
+    """One line of text that scrolls sideways, car-radio style, when it is too
+    long to fit: it holds still for a moment, then slides through and loops."""
+
+    DEFAULT_CSS = """
+    Marquee { width: 1fr; height: 1; }
+    """
+
+    STEP_SECONDS = 0.2  # one character per step
+    HOLD_STEPS = 10     # two seconds at the start of each pass
+
+    def __init__(self, text: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self.text = text
+        self._offset = 0
+        self._hold = self.HOLD_STEPS
+
+    def update(self, text: str) -> None:
+        self.text = text
+        self._offset = 0
+        self._hold = self.HOLD_STEPS
+        self.refresh()
+
+    def on_mount(self) -> None:
+        self.set_interval(self.STEP_SECONDS, self._step)
+
+    def _step(self) -> None:
+        if cell_len(self.text) <= self.content_size.width:
+            self._offset = 0
+            return
+        if self._hold:
+            self._hold -= 1
+            return
+        self._offset = (self._offset + 1) % len(self.text + MARQUEE_GAP)
+        if self._offset == 0:
+            self._hold = self.HOLD_STEPS  # back at the start: pause again
+        self.refresh()
+
+    def render(self) -> Content:
+        return Content(marquee_window(self.text, self.content_size.width, self._offset))
+
+
 class Cap(NamedTuple):
     """One key cap: the key it shows, its label, and the action a click runs.
 

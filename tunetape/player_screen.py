@@ -17,7 +17,7 @@ from textual.widgets import OptionList, ProgressBar, Static
 from textual.worker import get_current_worker
 
 from tunetape.screens import NAV, FlowScreen, HelpModal
-from tunetape.widgets import Cap, Graph, KeyCaps, LevelMeter, TopBar
+from tunetape.widgets import Cap, Graph, KeyCaps, LevelMeter, Marquee, TopBar
 
 # The poll runs at the level meter's pace; the rest is read less often.
 POLL_SECONDS = 0.1
@@ -163,7 +163,7 @@ class PlayerScreen(FlowScreen):
             with Vertical(id="deck"):
                 with Vertical(id="now", classes="box"):
                     with Horizontal(id="now-top"):
-                        yield Static(id="title")
+                        yield Marquee(id="title")
                         yield Static(loading_line(), id="status")
                     yield Static(id="subtitle")
                     with Horizontal(id="time-row"):
@@ -225,7 +225,7 @@ class PlayerScreen(FlowScreen):
 
     def _show_track(self) -> None:
         """Fill in everything that belongs to the current track."""
-        self.query_one("#title", Static).update(Content(self.track_title))
+        self.query_one("#title", Marquee).update(self.track_title)
         details = [self.subtitle] if self.subtitle else []
         label = self.playlist_info.get("track_label")
         if label:

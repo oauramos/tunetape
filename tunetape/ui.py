@@ -121,7 +121,7 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
 #deck { width: 1fr; height: 100%; }
 #now { height: auto; }
 #now-top, #time-row { height: 1; }
-#title { width: 1fr; text-style: bold; text-wrap: nowrap; text-overflow: ellipsis; }
+#title { width: 1fr; text-style: bold; }
 #status { width: auto; padding-left: 2; }
 #subtitle { color: $text-muted; text-wrap: nowrap; text-overflow: ellipsis; }
 #time-row { margin-top: 1; }

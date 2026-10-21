@@ -10,7 +10,9 @@ import tunetape.__main__ as main
 from tunetape import config, ui
 from tunetape.demo import DEMO_ALBUM, DEMO_TRACKS, FakeController, playlist_info_for
 from tunetape.models import Track
-from tunetape.widgets import KeyCaps, LevelMeter, Tuna, balanced_rows, graph_rows
+from tunetape.widgets import (
+    KeyCaps, LevelMeter, Tuna, balanced_rows, graph_rows, marquee_window,
+)
 
 NOTHING = object()
 
@@ -105,6 +107,17 @@ def test_graph_rows_fill_braille_from_the_bottom():
     assert graph_rows([1.0], 3, 1, maximum=1.0) == ["  ⢸"]  # newest on the right
     assert graph_rows([5.0, 10.0], 1, 1) == ["⣼"]  # scaled to the largest shown
     assert graph_rows([], 0, 3) == []
+
+
+def test_marquee_window_loops_long_text():
+    text = "Rick Astley - Never Gonna Give You Up"
+    assert marquee_window("fits", 10, 7) == "fits"  # short text never moves
+    assert marquee_window(text, 10, 0) == "Rick Astle"
+    assert marquee_window(text, 10, 5) == "Astley - N"
+    assert marquee_window(text, 10, len(text)) == "   ·   Ric"  # the gap, then around again
+    assert marquee_window(text, 10, len(text) + 7) == marquee_window(text, 10, 0)
+    # Two-cell characters never get cut in half at the edge.
+    assert marquee_window("日本語のタイトル", 5, 0) == "日本 "
 
 
 def test_level_meter_holds_peaks():
@@ -271,6 +284,26 @@ def test_level_and_stream_panels_follow_the_controller():
     assert seen["meter"].startswith("L ") and "\nR " in seen["meter"]
     assert "opus · 131 kb/s" in seen["stream"] and "48 kHz · stereo" in seen["stream"]
     assert seen["samples"] >= 5
+
+
+def test_long_titles_scroll_like_a_car_radio():
+    long_title = "A Very Long Song Title That Will Never Fit In Sixty Columns (Remastered)"
+    seen = []
+
+    def title(app):
+        return str(app.screen.query_one("#title").render())
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(0.5)
+        seen.append(title(app))
+        await pilot.pause(3.0)  # past the two-second hold
+        seen.append(title(app))
+
+    drive(lambda: ui.play(long_title, FakeController(200, 10, frozen=True)), script, (60, 24))
+    start, later = seen
+    assert long_title.startswith(start) and len(start) < len(long_title)
+    assert later != start and later.strip() in long_title and len(later) == len(start)
 
 
 def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
