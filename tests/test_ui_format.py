@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 
-from tunetape.player_screen import format_time, volume_meter
+from tunetape.player_screen import VOLUME_BAR, format_time, volume_gauge
 from tunetape.ui import _humanize_time
 
 
@@ -13,10 +13,15 @@ def test_format_time():
     assert format_time(3600) == "60:00"
 
 
-def test_volume_meter():
-    assert volume_meter(0, False).plain.endswith(" 0%")
-    assert volume_meter(130, False).plain.endswith("130%")  # mpv goes past 100
-    assert "muted" in volume_meter(80, True).plain
+def test_volume_gauge():
+    assert volume_gauge(80).plain.rstrip().endswith("80%")
+    assert volume_gauge(130).plain.rstrip().endswith("130%")  # mpv goes past 100
+    assert "muted" in volume_gauge(80, True).plain
+    assert "--" in volume_gauge().plain  # before the first reading
+    # Same width whatever it shows, so the caps don't reflow as it changes.
+    widths = {volume_gauge(v, m).cell_length for v in (None, 0, 5, 100, 130) for m in (0, 1)}
+    assert len(widths) == 1
+    assert volume_gauge(50).plain.count("━") == VOLUME_BAR
 
 
 def test_humanize_time():

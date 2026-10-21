@@ -19,11 +19,18 @@ from tunetape import __version__
 from tunetape.art import ASCII_HEIGHT, ASCII_WIDTH
 from tunetape.widgets import AsciiTuna, Cap, KeyCaps, TopBar, Tuna
 
+# The same navigation on every screen, always last and in this order:
+# h help, b back, q quit. Screens with a text box can't take letters as
+# keys, so there esc goes back and ctrl+c quits (both work everywhere).
+HELP = Cap("h", "help", "help")
+BACK = Cap("b", "back", "back")
 QUIT = Cap("q", "quit", "app.quit_session")
-BACK = Cap("esc", "back", "back")
+NAV = [HELP, BACK, QUIT]
+TYPING_NAV = [Cap("esc", "back", "back"), Cap("ctrl+c", "quit", "app.quit_session")]
 
 
 NO_QUIT = object()  # QUIT_RESULT of screens with no "quit" answer: quitting closes the app
+NO_BACK = object()  # BACK_RESULT of screens with nothing to go back to
 
 
 class Answers:
@@ -39,7 +46,22 @@ class Answers:
 
 
 class FlowScreen(Answers, Screen):
-    pass
+    """A full screen of the flow, with the universal navigation keys."""
+
+    BACK_RESULT = NO_BACK  # what b / esc answer
+    BINDINGS = [
+        Binding("b,escape", "back", show=False),
+        Binding("q", "quit_session", show=False),
+        Binding("h,question_mark", "help", show=False),
+    ]
+
+    def action_back(self) -> None:
+        if self.BACK_RESULT is not NO_BACK:
+            self.answer(self.BACK_RESULT)
+
+    def action_help(self) -> None:
+        if not isinstance(self.app.screen, HelpModal):
+            self.app.push_screen(HelpModal())
 
 
 class FlowModal(Answers, ModalScreen):
@@ -62,11 +84,8 @@ MENU_CAPS = [
     Cap("2", "History", "pick('2')"),
     Cap("3", "Discover", "pick('3')"),
     Cap("4", "Settings", "pick('4')"),
-    None,
-    Cap("h", "Help", "pick('h')"),
-    Cap("d", "Debug", "pick('d')"),
-    Cap("q", "Quit", "app.quit_session"),
 ]
+MENU_NAV = [Cap("d", "debug", "pick('d')"), Cap("h", "help", "pick('h')"), QUIT]
 
 
 class MenuScreen(FlowScreen):
@@ -88,7 +107,6 @@ class MenuScreen(FlowScreen):
         Binding("4", "pick('4')", show=False),
         Binding("h,question_mark", "pick('h')", show=False),
         Binding("d", "pick('d')", show=False),
-        Binding("q", "quit_session", show=False),
     ]
 
     def compose(self):
@@ -100,7 +118,9 @@ class MenuScreen(FlowScreen):
             yield Static(Content.from_markup(
                 "[b $primary]Welcome to TuneTape[/]\n[$foreground 60%]Terminal Player by @oauramos[/]"
             ), id="welcome")
-            yield KeyCaps(MENU_CAPS, navigable=True, flat_below=22, id="menu-caps")
+            yield KeyCaps(MENU_CAPS, navigable=True, boxed=True, flat_below=22, align="center",
+                          id="menu-caps")
+            yield KeyCaps(MENU_NAV, navigable=True, align="center", id="menu-nav")
 
     def on_mount(self) -> None:
         self.query_one("#menu-caps").focus()
@@ -119,7 +139,7 @@ class PromptScreen(FlowScreen):
     """
 
     QUIT_RESULT = "q"
-    BINDINGS = [Binding("escape", "back", show=False)]
+    BACK_RESULT = ""
 
     def __init__(self, crumb: str, title: str, intro: Content, *, placeholder: str = "",
                  submit: str = "submit", note: Content = None, detect=None):
@@ -139,8 +159,7 @@ class PromptScreen(FlowScreen):
                 yield Static(self.intro, classes="intro")
                 yield Input(placeholder=self.placeholder, id="prompt-input")
                 yield Static(self.note, id="prompt-note", classes="hint")
-                yield KeyCaps([Cap("enter", self.submit_label, "submit"), BACK,
-                               Cap("ctrl+c", "quit", "app.quit_session")])
+                yield KeyCaps([Cap("enter", self.submit_label, "submit"), *TYPING_NAV])
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -158,9 +177,6 @@ class PromptScreen(FlowScreen):
         if value:
             self.answer(value)
 
-    def action_back(self) -> None:
-        self.answer("")
-
 
 # --- lists (AI suggestions, history) ----------------------------------------
 
@@ -168,10 +184,7 @@ class ListScreen(FlowScreen):
     """A card holding a scrolling list. Subclasses answer from ``picked``."""
 
     QUIT_RESULT = ("quit", None)
-    BINDINGS = [
-        Binding("escape,b", "back", show=False),
-        Binding("q", "quit_session", show=False),
-    ]
+    BACK_RESULT = ("back", None)
     CRUMB = ""
     CAPS: list = []
 
@@ -207,16 +220,13 @@ class ListScreen(FlowScreen):
     def picked(self, index: int) -> None:
         raise NotImplementedError
 
-    def action_back(self) -> None:
-        self.answer(("back", None))
-
 
 class SuggestionsScreen(ListScreen):
     """AI suggestions. Answers ('play', track), ('research', None), ('back', None) or quit."""
 
     CRUMB = "Discover"
     BINDINGS = [Binding("r", "research", show=False)]
-    CAPS = [Cap("enter", "play", "select"), Cap("r", "new request", "research"), BACK, QUIT]
+    CAPS = [Cap("enter", "play", "select"), Cap("r", "new request", "research"), *NAV]
 
     def __init__(self, request: str, tracks: list):
         rows = [
@@ -242,7 +252,7 @@ class HistoryScreen(ListScreen):
         Binding("c", "clear", show=False),
     ]
     CAPS = [Cap("enter", "play", "select"), Cap("d", "delete", "delete"),
-            Cap("c", "clear all", "clear"), BACK, QUIT]
+            Cap("c", "clear all", "clear"), *NAV]
 
     def __init__(self, entries: list, rows: list, highlight: int = 0):
         super().__init__("Recently played", rows, subtitle=f"{len(entries)} entries",
@@ -287,10 +297,7 @@ class OptionsScreen(FlowScreen):
     """
 
     QUIT_RESULT = ("q", None)
-    BINDINGS = [
-        Binding("escape,b", "back", show=False),
-        Binding("q", "quit_session", show=False),
-    ]
+    BACK_RESULT = ("b", None)
 
     def __init__(self, crumb: str, title: str, rows: list, *, intro: Content = None,
                  edits: dict = None, highlight: int = 0):
@@ -319,7 +326,7 @@ class OptionsScreen(FlowScreen):
                     # What the highlighted row does, kept off the rows so they
                     # stay one line each on narrow terminals.
                     yield Static(id="option-help")
-                    yield KeyCaps([Cap("enter", "select", "select"), BACK, QUIT])
+                    yield KeyCaps([Cap("enter", "select", "select"), *NAV])
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         row = self.rows[event.option_index]
@@ -336,7 +343,7 @@ class OptionsScreen(FlowScreen):
 
     def on_key(self, event) -> None:
         for i, row in enumerate(self.rows):
-            if event.character == row.key and row.key not in ("b", "q"):
+            if event.character == row.key and row.key not in ("b", "q", "h", "?"):
                 event.stop()
                 self.query_one("#options", OptionList).highlighted = i
                 self._pick(i)
@@ -360,9 +367,6 @@ class OptionsScreen(FlowScreen):
                 self.answer((key, text))
 
         self.app.push_screen(EditModal(edit), entered)
-
-    def action_back(self) -> None:
-        self.answer(("b", None))
 
 
 class EditModal(ModalScreen):
@@ -402,7 +406,7 @@ class ThemeScreen(ListScreen):
     """
 
     CRUMB = "Settings"
-    CAPS = [Cap("enter", "use theme", "select"), BACK, QUIT]
+    CAPS = [Cap("enter", "use theme", "select"), *NAV]
 
     def __init__(self, themes: list, current: str):
         names = [t.name for t in themes]
@@ -451,11 +455,11 @@ class BusyScreen(FlowScreen):
                 yield ProgressBar(total=None, show_percentage=False, show_eta=False,
                                   id="busy-bar")
                 yield Static(id="busy-detail", classes="hint")
+                yield KeyCaps([QUIT], id="busy-caps")
 
     def on_mount(self) -> None:
         box = self.query_one("#busy")
         box.border_title = "loading"
-        box.border_subtitle = "ctrl+c quit"
         self._draw()
         self.set_interval(1 / 12, self._spin)
 
@@ -515,10 +519,10 @@ class BusyScreen(FlowScreen):
 class NoticeScreen(FlowScreen):
     """Why AI discovery can't run, with a way into its settings. Answers 's', 'back' or 'quit'."""
 
+    BACK_RESULT = "back"
     BINDINGS = [
         Binding("s", "settings", show=False),
-        Binding("escape,b,enter", "back", show=False),
-        Binding("q", "quit_session", show=False),
+        Binding("enter", "back", show=False),
     ]
 
     def __init__(self, title: str, message: str):
@@ -531,13 +535,10 @@ class NoticeScreen(FlowScreen):
         with Vertical(classes="body"):
             with card(self.title_text, classes="-warning"):
                 yield Static(Content(self.message))
-                yield KeyCaps([Cap("s", "AI settings", "settings"), BACK, QUIT])
+                yield KeyCaps([Cap("s", "AI settings", "settings"), *NAV])
 
     def action_settings(self) -> None:
         self.answer("s")
-
-    def action_back(self) -> None:
-        self.answer("back")
 
 
 class ErrorModal(FlowModal):
@@ -593,14 +594,16 @@ HELP_SECTIONS = {
         ("space", "Play / pause"),
         ("← →", "Seek 10s (or click the bar)"),
         (", .", "Seek 30s"),
-        ("↑ ↓", "Volume (or the mouse wheel)"),
+        ("↑ ↓", "Volume (or the wheel, or click the gauge)"),
         ("m", "Mute"),
         ("n p", "Next / previous track"),
         ("tab", "Browse the queue, enter plays"),
     ],
     "Everywhere": [
-        ("b esc", "Back"),
+        ("h ?", "This help"),
+        ("b esc", "Back (esc while typing)"),
         ("q", "Quit tunetape"),
+        ("ctrl+c", "Quit, even while typing or loading"),
         ("ctrl+p", "Command palette: themes"),
     ],
 }
@@ -630,9 +633,10 @@ class HelpModal(FlowModal):
                 Content.from_markup("[b $accent]$key[/]  $desc", key=k.rjust(width), desc=d)
                 for k, d in HELP_SECTIONS[name]
             )
-        with card("Keys", subtitle="esc to close", id="help"):
+        with card("Keys", id="help"):
             with VerticalScroll():
                 yield Static(Content("\n").join(lines))
+            yield KeyCaps([Cap("b", "back", "close"), QUIT])
 
     def action_close(self) -> None:
         self.answer(None)
@@ -641,11 +645,8 @@ class HelpModal(FlowModal):
 class DebugScreen(FlowScreen):
     """Versions, dependencies and this session's log. Answers 'c', None (back) or 'quit'."""
 
-    BINDINGS = [
-        Binding("c", "clear", show=False),
-        Binding("escape,b", "back", show=False),
-        Binding("q", "quit_session", show=False),
-    ]
+    BACK_RESULT = None
+    BINDINGS = [Binding("c", "clear", show=False)]
 
     def __init__(self, about: Content, log: Content):
         super().__init__()
@@ -659,7 +660,7 @@ class DebugScreen(FlowScreen):
                 yield Static(self.about, id="about", classes="intro")
                 with VerticalScroll(id="log"):
                     yield Static(self.log_text)
-                yield KeyCaps([Cap("c", "clear log", "clear"), BACK, QUIT])
+                yield KeyCaps([Cap("c", "clear log", "clear"), *NAV])
 
     def on_mount(self) -> None:
         log = self.query_one("#log")
@@ -668,6 +669,3 @@ class DebugScreen(FlowScreen):
 
     def action_clear(self) -> None:
         self.answer("c")
-
-    def action_back(self) -> None:
-        self.answer(None)

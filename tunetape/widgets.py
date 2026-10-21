@@ -8,6 +8,7 @@ from textual import actions
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.content import Content
+from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Static
@@ -289,16 +290,21 @@ _FLAT_LOOKS = {
 }
 
 
-class KeyCaps(Widget):
-    """A block of key caps, laid out in centred rows that wrap evenly.
+TAIL = -1  # the index KeyCaps gives its tail in layouts and hit boxes
 
-    Each cap is a little box with its key in the top border and a label inside,
-    or a one-line pill when the terminal is shorter than ``flat_below`` rows.
-    Clicking a cap runs
-    its action; with ``navigable`` the arrows move a cursor between caps and
-    enter presses the one under it. ``None`` in ``caps`` starts a new row.
-    Caps whose action the screen's ``check_action`` hides or disables are
-    dropped or dimmed, so call ``refresh(layout=True)`` when that changes.
+
+class KeyCaps(Widget):
+    """A block of key caps laid out in rows that wrap evenly.
+
+    By default each cap is a one-line pill (`` q quit ``), rows start at the
+    left, and a ``tail`` (say, a volume gauge) sits at the right end of the
+    last row. ``boxed`` caps are little boxes with the key in the top border
+    instead, falling back to pills when the terminal is shorter than
+    ``flat_below`` rows. Clicking a cap runs its action; with ``navigable``
+    the arrows move a cursor between caps and enter presses the one under it.
+    ``None`` in ``caps`` starts a new row. Caps whose action the screen's
+    ``check_action`` hides or disables are dropped or dimmed, so call
+    ``refresh(layout=True)`` when that changes.
     """
 
     DEFAULT_CSS = """
@@ -316,16 +322,32 @@ class KeyCaps(Widget):
     cursor = reactive(-1)
     hover = reactive(-1)
 
-    def __init__(self, caps: list, *, navigable: bool = False, flat_below: int = 20, **kwargs):
+    class TailClicked(Message):
+        """The tail was clicked ``x`` cells from its left edge."""
+
+        def __init__(self, x: int):
+            super().__init__()
+            self.x = x
+
+    def __init__(self, caps: list, *, navigable: bool = False, boxed: bool = False,
+                 flat_below: int = 0, align: str = "left", **kwargs):
         super().__init__(**kwargs)
         self.caps = list(caps)
         self.can_focus = navigable
+        self.boxed = boxed
         self.flat_below = flat_below
+        self.align = align
+        self.tail = None  # Content drawn after the last cap
         self._hits = []  # (x0, x1, y0, y1, index) of each cap drawn last
 
     def on_mount(self) -> None:
         if self.can_focus:
             self.cursor = next(iter(self._pressable()), -1)
+
+    def set_tail(self, content: Content) -> None:
+        relayout = self.tail is None or self.tail.cell_length != content.cell_length
+        self.tail = content
+        self.refresh(layout=relayout)
 
     # --- state and layout --------------------------------------------------
 
@@ -333,7 +355,7 @@ class KeyCaps(Widget):
     def flat(self) -> bool:
         # Read at layout time: a resize lays the screen out again, and the
         # height always changes with the style, so the caps repaint too.
-        return self.screen.size.height < self.flat_below
+        return not self.boxed or self.screen.size.height < self.flat_below
 
     def _state(self, cap: Cap) -> Optional[bool]:
         """True to draw, None to draw disabled, False to leave out."""
@@ -367,12 +389,20 @@ class KeyCaps(Widget):
             state = self._state(cap)
             if state is not False:
                 segment.append((i, cap, state is True, self._cap_width(cap)))
+        if self.tail is not None:
+            # A wider gap before the tail sets it apart from the caps.
+            segment.append((TAIL, None, True, self.tail.cell_length + 2))
         segments.append(segment)
         rows = []
         for segment in filter(None, segments):
             for row in balanced_rows([c[3] for c in segment], width):
                 rows.append([segment[j] for j in row])
         return rows
+
+    def get_content_width(self, container, viewport) -> int:
+        # As wide as one row of everything, for auto-width parents (dialogs).
+        widths = [c[3] for row in self._layout(10_000) for c in row]
+        return min(sum(widths) + GAP * max(len(widths) - 1, 0), container.width)
 
     def get_content_height(self, container, viewport, width: int) -> int:
         return len(self._layout(width)) * (1 if self.flat else 3)
@@ -412,12 +442,24 @@ class KeyCaps(Widget):
         lines, hits = [], []
         for r, row in enumerate(self._layout(width)):
             used = sum(c[3] for c in row) + GAP * (len(row) - 1)
-            x = max(0, (width - used) // 2)
+            x = max(0, (width - used) // 2) if self.align == "center" else 0
             parts = [[" " * x] for _ in range(height)]
             for n, (index, cap, enabled, cap_width) in enumerate(row):
                 if n:
                     for part in parts:
                         part.append(" " * GAP)
+                if index == TAIL:
+                    # Pushed to the right edge of its row (the layout kept
+                    # at least two columns free in front of it).
+                    tail_width = self.tail.cell_length
+                    shift = max(width - x - tail_width, 0)
+                    x += shift
+                    hits.append((x, x + tail_width, r * height, (r + 1) * height, TAIL))
+                    for i, part in enumerate(parts):
+                        part.append(" " * shift)
+                        part.append(self.tail if i == height // 2 else " " * tail_width)
+                    x += tail_width
+                    continue
                 hits.append((x, x + cap_width, r * height, (r + 1) * height, index))
                 for part, piece in zip(parts, self._draw(cap, cap_width, self._look(index, cap, enabled))):
                     part.append(piece)
@@ -428,22 +470,26 @@ class KeyCaps(Widget):
 
     # --- mouse and keys ----------------------------------------------------
 
-    def _cap_at(self, x: int, y: int) -> int:
+    def _cap_at(self, x: int, y: int):
         for x0, x1, y0, y1, index in self._hits:
             if x0 <= x < x1 and y0 <= y < y1:
                 return index
-        return -1
+        return None
 
     def on_mouse_move(self, event) -> None:
         index = self._cap_at(event.x, event.y)
-        self.hover = index if index in self._pressable() else -1
+        self.hover = index if index is not None and index in self._pressable() else -1
 
     def on_leave(self, event) -> None:
         self.hover = -1
 
     async def on_click(self, event) -> None:
         index = self._cap_at(event.x, event.y)
-        if index >= 0:
+        if index == TAIL:
+            event.stop()
+            x0 = next(h[0] for h in self._hits if h[4] == TAIL)
+            self.post_message(self.TailClicked(event.x - x0))
+        elif index is not None:
             event.stop()
             await self.press(index)
 
@@ -473,6 +519,11 @@ class KeyCaps(Widget):
         rows = sorted({box[2] for box in boxes.values()})
         target = rows.index(here[2]) + step
         if not 0 <= target < len(rows):
+            # Off the top or bottom row: on to the next block of caps, if any.
+            if step > 0:
+                self.screen.focus_next(KeyCaps)
+            else:
+                self.screen.focus_previous(KeyCaps)
             return
         centre = (here[0] + here[1]) / 2
         candidates = [box for box in boxes.values() if box[2] == rows[target]]

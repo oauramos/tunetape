@@ -16,10 +16,9 @@ from textual.content import Content
 from textual.widgets import OptionList, ProgressBar, Static
 from textual.worker import get_current_worker
 
-from tunetape.screens import FlowScreen, HelpModal
+from tunetape.screens import NAV, FlowScreen, HelpModal
 from tunetape.widgets import Cap, Graph, KeyCaps, LevelMeter, TopBar
 
-VOLUME_STEPS = "▁▂▃▄▅▆▇█"
 # The poll runs at the level meter's pace; the rest is read less often.
 POLL_SECONDS = 0.1
 STATE_EVERY = 3   # position aside, playback state every 0.3 s
@@ -42,16 +41,25 @@ def format_bytes(count: float) -> str:
         count /= 1024
 
 
-def volume_meter(volume: float, muted: bool) -> Content:
+VOLUME_BAR = 10   # cells in the volume gauge's bar
+GAUGE_LEAD = 10   # cells before the bar: the " ↑ ↓ vol " pill and a space
+
+
+def volume_gauge(volume: float = None, muted: bool = False) -> Content:
+    """`` ↑ ↓ vol  ━━━━━━━━━━  80%``: a pill like the caps, then a flat bar
+    drawn like the progress bar. ``None`` until the first reading."""
+    level = 0.0 if volume is None or muted else min(max(volume / 100.0, 0.0), 1.0)
+    lit = round(VOLUME_BAR * level)
     if muted:
-        return Content.from_markup(
-            "[$foreground 60%]vol[/] [$foreground 30%]$steps[/] [b $error]muted[/]",
-            steps=VOLUME_STEPS,
-        )
-    lit = round(len(VOLUME_STEPS) * min(max(volume / 100.0, 0.0), 1.0))
-    return Content.from_markup(
-        "[$foreground 60%]vol[/] [$primary]$lit[/][$foreground 30%]$unlit[/] $pct%",
-        lit=VOLUME_STEPS[:lit], unlit=VOLUME_STEPS[lit:], pct=str(int(round(volume))),
+        figure, figure_style = " muted", "b $error"
+    elif volume is None:
+        figure, figure_style = "   --", "$foreground 50%"
+    else:
+        figure, figure_style = f" {round(volume):>3}%", "$foreground 80%"
+    return Content.assemble(
+        (" ↑ ↓ ", "b $accent on $panel"), ("vol ", "$foreground 80% on $panel"), " ",
+        ("━" * lit, "$primary"), ("━" * (VOLUME_BAR - lit), "$panel"),
+        (figure.ljust(6), figure_style),
     )
 
 
@@ -100,16 +108,14 @@ def stream_lines(stats: dict) -> Content:
     )
 
 
+# The volume gauge follows these as the caps' tail (see volume_gauge).
 PLAYER_CAPS = [
     Cap("space", "play/pause", "toggle_pause"),
     Cap("← →", "seek"),
-    Cap("↑ ↓", "volume"),
     Cap("m", "mute", "mute"),
     Cap("p", "prev", "prev"),
     Cap("n", "next", "next"),
-    Cap("h", "help", "help"),
-    Cap("b", "back", "back"),
-    Cap("q", "quit", "app.quit_session"),
+    *NAV,
 ]
 
 
@@ -164,13 +170,12 @@ class PlayerScreen(FlowScreen):
                         yield Static("00:00", id="elapsed")
                         yield ProgressBar(show_percentage=False, show_eta=False, id="progress")
                         yield Static("--:--", id="duration")
-                    yield KeyCaps(PLAYER_CAPS, flat_below=10_000, id="player-caps")
+                    yield KeyCaps(PLAYER_CAPS, id="player-caps")
                 with Horizontal(id="stats"):
                     with Vertical(id="level", classes="box"):
                         yield LevelMeter(id="meter")
                         yield Graph(maximum=1.0, tints=("$success", "$warning", "$error"),
                                     id="level-graph")
-                        yield Static(id="volume")
                     with Vertical(id="stream", classes="box"):
                         yield Static(stream_lines({}), id="stream-info")
                         yield Graph(tints=("$primary", "$accent"), id="net-graph")
@@ -201,12 +206,12 @@ class PlayerScreen(FlowScreen):
         self._w_progress = self.query_one("#progress", ProgressBar)
         self._w_bar = self._w_progress.query_one("#bar")
         self._w_status = self.query_one("#status", Static)
-        self._w_volume = self.query_one("#volume", Static)
         self._w_meter = self.query_one("#meter", LevelMeter)
         self._w_level_graph = self.query_one("#level-graph", Graph)
         self._w_net_graph = self.query_one("#net-graph", Graph)
         self._w_stream = self.query_one("#stream-info", Static)
         self._w_caps = self.query_one("#player-caps", KeyCaps)
+        self._w_caps.set_tail(volume_gauge())
         self.query_one("#now").border_title = "now playing"
         self.query_one("#level").border_title = "level"
         self.query_one("#stream").border_title = "stream"
@@ -325,7 +330,7 @@ class PlayerScreen(FlowScreen):
         if "duration" in read:
             self._w_duration.update(format_time(s["duration"]) if s["duration"] > 0 else "--:--")
             self._w_status.update(status_line(paused))
-            self._w_volume.update(volume_meter(s["volume"], s["muted"]))
+            self._w_caps.set_tail(volume_gauge(s["volume"], s["muted"]))
         # Unknown duration (live streams) → Textual's indeterminate pulse.
         if s.get("duration", 0) > 0:
             self._w_progress.update(total=s["duration"], progress=s["position"])
@@ -409,6 +414,13 @@ class PlayerScreen(FlowScreen):
 
     def on_mouse_scroll_down(self, event) -> None:
         self._scroll_volume(event, -5)
+
+    def on_key_caps_tail_clicked(self, event: KeyCaps.TailClicked) -> None:
+        """A click on the volume gauge's bar sets the volume there."""
+        cell = event.x - GAUGE_LEAD
+        if 0 <= cell < VOLUME_BAR and "volume" in self._state:
+            target = (cell + 1) * 100 / VOLUME_BAR
+            self.action_volume(target - self._state["volume"])
 
     def on_click(self, event) -> None:
         """Click the progress bar to seek there."""

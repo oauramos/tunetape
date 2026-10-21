@@ -288,6 +288,26 @@ def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
     assert controller.get_volume() == 80 + 5 + 5 - 5
 
 
+def test_volume_gauge_sits_after_quit_and_sets_volume_on_click():
+    flow, controller = album_flow()
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(0.5)  # a state poll, so the gauge knows the volume
+        caps = app.screen.query_one(KeyCaps)
+        quit_box = next(h for h in caps._hits if h[4] >= 0 and caps.caps[h[4]].label == "quit")
+        tail = next(h for h in caps._hits if h[4] == -1)
+        seen["after_quit"] = tail[2] == quit_box[2] and tail[0] > quit_box[1]
+        seen["at_right_edge"] = tail[1] == caps.size.width
+        await pilot.click("#player-caps", offset=(tail[0] + 10 + 2, tail[2]))  # 3rd of 10 cells
+        await pilot.pause(0.1)
+
+    drive(flow, script)
+    assert seen == {"after_quit": True, "at_right_edge": True}
+    assert controller.get_volume() == 30
+
+
 def test_clicking_caps_and_the_bar():
     flow, controller = album_flow()
 
@@ -396,7 +416,8 @@ def test_error_and_confirm():
     (["d"], "d"),
     (["q"], "q"),
     (["right", "right", "enter"], "3"),
-    (["down", "enter"], "h"),
+    (["down", "enter"], "d"),            # down from the buttons into the nav row
+    (["down", "right", "enter"], "h"),
 ])
 def test_menu(names, result):
     assert drive(ui.main_menu, keys(*names, wait_for="MenuScreen"))[0] == result
@@ -416,6 +437,56 @@ def test_menu_shows_the_ascii_tuna_when_it_fits(size, ascii):
 
     drive(ui.main_menu, script, size)
     assert seen == {"ascii": ascii, "pixel": not ascii, "welcome": not ascii}
+
+
+@pytest.mark.parametrize("flow, wait_for, back, quit_", [
+    (lambda: ui.show_history(HISTORY), "HistoryScreen", ("back", None), ("quit", None)),
+    (lambda: ui.show_settings(True), "OptionsScreen", "b", "q"),
+    (ui.show_ai_settings, "OptionsScreen", "back", "quit"),
+    (lambda: ui.show_ai_results("x", [Track("A", "a")]), "SuggestionsScreen",
+     ("back", None), ("quit", None)),
+    (lambda: ui.show_ai_unavailable("nope"), "NoticeScreen", "back", "quit"),
+    (ui.show_debug, "DebugScreen", None, "quit"),
+    (ui.show_theme_picker, "ThemeScreen", None, "quit"),
+])
+def test_navigation_keys_are_the_same_everywhere(flow, wait_for, back, quit_):
+    for key in ("b", "escape"):
+        assert drive(flow, keys(key, wait_for=wait_for))[0] == back, key
+    assert drive(flow, keys("q", wait_for=wait_for))[0] == quit_
+
+    seen = []
+
+    async def help_then_back(pilot, app):
+        await until(pilot, on(app, wait_for))
+        await pilot.press("h")
+        await until(pilot, on(app, "HelpModal"))
+        seen.append("help")
+        await pilot.press("b")  # closes help, not the screen behind it
+        await until(pilot, on(app, wait_for))
+        seen.append("back")
+
+    assert drive(flow, help_then_back)[0] is NOTHING
+    assert seen == ["help", "back"]
+
+
+def test_typing_b_q_h_in_a_text_box_types_them():
+    async def script(pilot, app):
+        await until(pilot, on(app, "PromptScreen"))
+        await pilot.press(*"bqh?", "enter")
+
+    assert drive(ui.prompt_discover, script)[0] == "bqh?"
+    assert drive(ui.prompt_discover, keys("escape", wait_for="PromptScreen"))[0] == ""
+    assert drive(ui.prompt_discover, keys("ctrl+c", wait_for="PromptScreen"))[0] == "q"
+
+
+def test_every_screen_ends_its_caps_with_the_same_navigation():
+    from tunetape import screens
+    from tunetape.player_screen import PLAYER_CAPS
+
+    nav = [(c.key, c.label) for c in screens.NAV]
+    for caps in (PLAYER_CAPS, screens.HistoryScreen.CAPS, screens.SuggestionsScreen.CAPS,
+                 screens.ThemeScreen.CAPS):
+        assert [(c.key, c.label) for c in caps[-3:]] == nav
 
 
 def test_menu_click():

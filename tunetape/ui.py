@@ -95,6 +95,7 @@ MenuScreen.-ascii-width.-ascii-height #welcome { display: none; }
 #busy-bar Bar { width: 1fr; }
 #busy-bar Bar > .bar--indeterminate { color: $primary; background: $panel; }
 #busy-detail { margin-top: 1; }
+#busy-caps { margin-top: 1; }
 
 /* --- modals ------------------------------------------------------------ */
 ErrorModal, ConfirmModal, HelpModal, EditModal {
@@ -103,7 +104,7 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
 }
 #error, #confirm, #edit { width: 64; max-width: 100%; background: $surface; }
 #help { width: auto; max-width: 100%; padding: 1 3; background: $surface; }
-#help > VerticalScroll, #help Static { width: auto; }
+#help > VerticalScroll, #help Static, #help > KeyCaps { width: auto; }
 #log { scrollbar-size-vertical: 1; }
 
 /* --- player ------------------------------------------------------------ */
@@ -132,10 +133,10 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
 #progress Bar > .bar--complete { color: $primary; background: $panel; }
 #progress Bar > .bar--indeterminate { color: $primary; background: $panel; }
 #player-caps { margin-top: 1; }
+#menu-nav { margin-top: 1; }
 #stats { height: 1fr; }
 #level, #stream { width: 1fr; height: 100%; }
 #level-graph, #net-graph { margin-top: 1; }
-#volume { height: 1; }
 #queue {
     width: 40;
     height: 100%;
