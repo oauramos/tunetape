@@ -17,7 +17,26 @@ from tunetape.ui import (
     restore_terminal_state, console,
 )
 
+try:
+    from tunetape.textual_player import TextualPlayer
+except ImportError:  # textual comes with the optional [tui] extra
+    TextualPlayer = None
+
 _active_controller = None
+
+# Source labels for the Textual player's top bar, by history entry type.
+_SOURCE_NAMES = {"khinsider": "KHInsider", "spotify": "Spotify", "youtube_playlist": "YouTube"}
+
+
+def _player(title: str, controller, playlist_info: dict = None, **extra):
+    """The Textual player when the [tui] extra is installed, else the Rich PlayerUI.
+
+    ``extra`` (source / subtitle / tracks) only feeds the Textual player's top
+    bar and queue; both players return the same result strings from ``run()``.
+    """
+    if TextualPlayer is not None:
+        return TextualPlayer(title, controller, playlist_info, **extra)
+    return PlayerUI(title, controller, playlist_info)
 
 
 def _cleanup():
@@ -65,7 +84,7 @@ def _play_youtube(url: str, normalize: bool) -> str:
         _active_controller = controller
         debug.log(f"Now playing (YouTube): {info['title']}")
         history.record("youtube", url, info["title"])
-        ui = PlayerUI(info["title"], controller)
+        ui = _player(info["title"], controller, source="YouTube")
         result = ui.run()
     except Exception as e:
         if controller is None:
@@ -117,7 +136,7 @@ def _play_search(query: str, normalize: bool, title: str = None) -> str:
         _active_controller = controller
         debug.log(f"Now playing (AI): {display}")
         history.record("ai", query, display)
-        ui = PlayerUI(display, controller)
+        ui = _player(display, controller, source="YouTube")
         result = ui.run()
     except Exception as e:
         if controller is None:
@@ -185,11 +204,16 @@ def _play_album(album, *, type: str, url: str, normalize: bool,
                     _active_controller = controller
                     history.set_last_index(url, playlist.current_index)
                     playlist_info = {
+                        "index": playlist.current_index,
                         "track_label": playlist.track_label,
                         "has_next": playlist.has_next(),
                         "has_prev": playlist.has_prev(),
                     }
-                    ui = PlayerUI(track.name, controller, playlist_info)
+                    ui = _player(
+                        track.name, controller, playlist_info,
+                        source=_SOURCE_NAMES.get(type), subtitle=album.title,
+                        tracks=[t.name for t in album.tracks],
+                    )
                     result = ui.run()
                     consecutive_failures = 0
                 except Exception as e:
@@ -220,6 +244,8 @@ def _play_album(album, *, type: str, url: str, normalize: bool,
                 playlist.next()
             elif result == "prev_track" and playlist.has_prev():
                 playlist.prev()
+            elif result.startswith("jump_track:"):  # picked from the Textual queue
+                playlist.jump(int(result.split(":", 1)[1]))
             elif result == "quit":
                 break
             else:

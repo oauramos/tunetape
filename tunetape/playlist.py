@@ -62,6 +62,13 @@ class Playlist:
         self._save_cache()
         return self.current_track
 
+    def jump(self, index: int) -> Track:
+        if not 0 <= index < len(self._album.tracks):
+            raise IndexError("Track index out of range")
+        self._index = index
+        self._save_cache()
+        return self.current_track
+
     def _save_cache(self):
         data = {
             "album_title": self._album.title,

@@ -31,6 +31,9 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=7.0"]
+# Textual player screen (tunetape/textual_player.py); used in place of the Rich
+# player whenever it is installed.
+tui = ["textual>=8.2"]
 
 [project.urls]
 Homepage = "https://github.com/oauramos/tunetape"
