@@ -38,6 +38,9 @@ class DaemonError(Exception):
 class DaemonUnavailable(DaemonError):  # code 0: could not reach or start the daemon
     ...
 
+class DaemonTimeout(DaemonError):      # code -1: no answer within the call's timeout
+    ...
+
 class Client:
     @classmethod
     def connect(cls, *, spawn: bool = True, timeout: float = 10.0,
@@ -74,6 +77,10 @@ class Client:
 `call` is safe from several threads at once: one reader thread routes
 responses by `id` and hands `event` notifications to the subscriber callback.
 A dropped connection makes pending and later calls raise `DaemonUnavailable`.
+A call that gets no answer within `timeout` seconds raises `DaemonTimeout`
+(code `-1`); the connection stays usable. Every wrapper also takes an optional
+`timeout=` keyword, passed to `call` (`None` means the method's default: 30 s,
+longer for `wait=True` and `discover`).
 
 Constraints that apply everywhere: Python ≥ 3.9 (no `match`, no `X | Y`
 annotations evaluated at runtime), standard library only for the daemon, the
@@ -123,7 +130,14 @@ stderr), `2` usage error, `3` the daemon could not be reached or started.
   `quit` for `time-pos`, `duration`, `pause`, `volume`, `mute`,
   `af-metadata/…`, `audio-params`, …), "plays" for `FAKE_MPV_DURATION` seconds
   (default `2`) and then exits 0. A media argument containing `fake-fail` exits
-  with status 2 before opening the IPC endpoint.
+  with status 2 before opening the IPC endpoint; one containing
+  `fake-dur-<seconds>` plays that long instead; `FAKE_MPV_LOG=<file>` appends
+  each launch's argv as a JSON line.
+- `tests/fakes/fake_ytdlp.py` answers `--get-url --get-title` and
+  `--flat-playlist` without the network (input containing `fake-unavailable`
+  fails), for `TUNETAPE_YTDLP`.
+- `TUNETAPE_DAEMON_TRANSPORT=tcp` makes a POSIX daemon use the Windows
+  transport (loopback TCP + token), so that path is tested everywhere.
 
 With those, the engine, the daemon, the CLIs and the conformance suite run
 against local `file` inputs with no network, no yt-dlp and no audio device.
