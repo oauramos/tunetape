@@ -7,20 +7,21 @@ use std::fmt;
 use lexopt::prelude::*;
 
 pub const USAGE: &str = "\
-usage: tunetape-cli <command> [args]
+usage: tunetape-cli <command> [args] [--json]
 
   play <input…> [--title T]    replace the queue and play (words are joined with spaces)
   add <input…> [--next] [--title T]
   pause | resume | toggle | next | prev | stop | mute | clear
-  status [--json]
-  queue [--json]
+  status
+  queue
   jump <n>                     play track n (1-based)
   volume [<n> | +<n> | -<n>]   no argument prints the volume
   seek <s | +s | -s | mm:ss>   a sign means relative, bare means absolute
-  history [--limit N] [--json]
-  discover <words…> [--json]
-  shutdown                     stop the daemon
+  history [--limit N]
+  discover <words…>
+  shutdown                     stop the daemon (never starts one)
 
+  --json         print the daemon's raw result (every command but shutdown)
   -h, --help     show this help
   -V, --version  show the version
 
@@ -92,12 +93,8 @@ pub enum Command {
         title: Option<String>,
     },
     Simple(Simple),
-    Status {
-        json: bool,
-    },
-    Queue {
-        json: bool,
-    },
+    Status,
+    Queue,
     /// 0-based index to send.
     Jump {
         index: u64,
@@ -108,14 +105,19 @@ pub enum Command {
         relative: bool,
     },
     History {
-        limit: Option<u64>,
-        json: bool,
+        limit: u64,
     },
     Discover {
         request: String,
-        json: bool,
     },
     Shutdown,
+}
+
+/// A parsed command line: the command, and whether to print raw JSON.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Invocation {
+    pub command: Command,
+    pub json: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,7 +148,59 @@ fn string(v: OsString) -> Result<String, UsageError> {
     })
 }
 
-pub fn parse<I>(args: I) -> Result<Command, UsageError>
+/// The options and positional words after a subcommand.
+#[derive(Default)]
+struct Rest {
+    words: Vec<String>,
+    json: bool,
+    next: bool,
+    title: Option<String>,
+    limit: Option<String>,
+}
+
+/// Read what follows a subcommand, allowing only the options in `allowed`.
+fn rest(p: &mut lexopt::Parser, allowed: &[&str]) -> Result<Rest, UsageError> {
+    let mut r = Rest::default();
+    while let Some(arg) = p.next()? {
+        match arg {
+            Long(name) if allowed.contains(&name) => match name {
+                "json" => r.json = true,
+                "next" => r.next = true,
+                "title" => r.title = Some(string(p.value()?)?),
+                "limit" => r.limit = Some(string(p.value()?)?),
+                _ => unreachable!("option {name} is allowed but not handled"),
+            },
+            Value(v) => r.words.push(string(v)?),
+            other => return Err(other.unexpected().into()),
+        }
+    }
+    Ok(r)
+}
+
+/// The remaining arguments unparsed, so `-10` is a number and not an option;
+/// `--json` may still appear among them.
+fn raw_rest(p: &mut lexopt::Parser) -> Result<(Vec<String>, bool), UsageError> {
+    let mut json = false;
+    let mut words = Vec::new();
+    for arg in p.raw_args()? {
+        let arg = string(arg)?;
+        if arg == "--json" {
+            json = true;
+        } else {
+            words.push(arg);
+        }
+    }
+    Ok((words, json))
+}
+
+fn no_words(r: &Rest, name: &str) -> Result<(), UsageError> {
+    match r.words.first() {
+        None => Ok(()),
+        Some(w) => Err(usage(format!("{name} takes no arguments (got {w})"))),
+    }
+}
+
+pub fn parse<I>(args: I) -> Result<Invocation, UsageError>
 where
     I: IntoIterator,
     I::Item: Into<OsString>,
@@ -154,79 +208,108 @@ where
     let mut p = lexopt::Parser::from_args(args);
     let name = match p.next()? {
         None => return Err(usage("missing command")),
-        Some(Short('h') | Long("help")) => return Ok(Command::Help),
-        Some(Short('V') | Long("version")) => return Ok(Command::Version),
+        Some(Short('h') | Long("help")) => return Ok(plain(Command::Help)),
+        Some(Short('V') | Long("version")) => return Ok(plain(Command::Version)),
         Some(Value(v)) => string(v)?,
         Some(other) => return Err(other.unexpected().into()),
     };
-    let cmd = match name.as_str() {
-        "help" => Command::Help,
-        "play" | "add" => parse_post(&mut p, name == "play")?,
-        "status" => Command::Status {
-            json: json_only(&mut p)?,
-        },
-        "queue" => Command::Queue {
-            json: json_only(&mut p)?,
-        },
-        "jump" => {
-            let n = one_raw(&mut p, "jump takes a track number")?;
-            match n.parse::<u64>() {
-                Ok(n) if n >= 1 => Command::Jump { index: n - 1 },
-                _ => return Err(usage(format!("jump: not a track number (1, 2, …): {n}"))),
+    let (command, json) = match name.as_str() {
+        "help" => (Command::Help, false),
+        "play" | "add" => {
+            let play = name == "play";
+            let allowed: &[&str] = if play {
+                &["json", "title"]
+            } else {
+                &["json", "title", "next"]
+            };
+            let r = rest(&mut p, allowed)?;
+            if r.words.is_empty() {
+                return Err(usage(format!(
+                    "{name} needs a link, a file or some words to search"
+                )));
             }
+            let input = r.words.join(" ");
+            let cmd = if play {
+                Command::Play {
+                    input,
+                    title: r.title,
+                }
+            } else {
+                Command::Add {
+                    input,
+                    next: r.next,
+                    title: r.title,
+                }
+            };
+            (cmd, r.json)
+        }
+        "status" | "queue" => {
+            let r = rest(&mut p, &["json"])?;
+            no_words(&r, &name)?;
+            let cmd = if name == "status" {
+                Command::Status
+            } else {
+                Command::Queue
+            };
+            (cmd, r.json)
+        }
+        "jump" => {
+            let r = rest(&mut p, &["json"])?;
+            let index = match r.words.as_slice() {
+                [n] => match n.parse::<u64>() {
+                    Ok(n) if n >= 1 => n - 1,
+                    _ => return Err(usage(format!("jump: not a track number (1, 2, …): {n}"))),
+                },
+                _ => return Err(usage("jump takes one track number (1-based)")),
+            };
+            (Command::Jump { index }, r.json)
         }
         "volume" => {
-            let rest = raw_rest(&mut p)?;
-            match rest.as_slice() {
-                [] => Command::Volume(Volume::Show),
-                [v] => Command::Volume(parse_volume(v)?),
+            let (words, json) = raw_rest(&mut p)?;
+            let v = match words.as_slice() {
+                [] => Volume::Show,
+                [v] => parse_volume(v)?,
                 _ => return Err(usage("volume takes at most one argument")),
-            }
+            };
+            (Command::Volume(v), json)
         }
         "seek" => {
-            let s = one_raw(&mut p, "seek takes a position: 90, 1:30, +10 or -10")?;
-            let (seconds, relative) = parse_seek(&s)?;
-            Command::Seek { seconds, relative }
+            let (words, json) = raw_rest(&mut p)?;
+            let (seconds, relative) = match words.as_slice() {
+                [s] => parse_seek(s)?,
+                _ => return Err(usage("seek takes a position: 90, 1:30, +10 or -10")),
+            };
+            (Command::Seek { seconds, relative }, json)
         }
         "history" => {
-            let (mut limit, mut json) = (None, false);
-            while let Some(arg) = p.next()? {
-                match arg {
-                    Long("json") => json = true,
-                    Long("limit") => {
-                        let v = string(p.value()?)?;
-                        limit = Some(
-                            v.parse::<u64>()
-                                .map_err(|_| usage(format!("--limit: not a number: {v}")))?,
-                        );
-                    }
-                    other => return Err(other.unexpected().into()),
-                }
-            }
-            Command::History { limit, json }
+            let r = rest(&mut p, &["json", "limit"])?;
+            no_words(&r, "history")?;
+            let limit = match &r.limit {
+                None => 50,
+                Some(v) => v
+                    .parse::<u64>()
+                    .map_err(|_| usage(format!("--limit: not a number: {v}")))?,
+            };
+            (Command::History { limit }, r.json)
         }
         "discover" => {
-            let (mut words, mut json) = (Vec::new(), false);
-            while let Some(arg) = p.next()? {
-                match arg {
-                    Long("json") => json = true,
-                    Value(v) => words.push(string(v)?),
-                    other => return Err(other.unexpected().into()),
-                }
-            }
-            if words.is_empty() {
+            let r = rest(&mut p, &["json"])?;
+            if r.words.is_empty() {
                 return Err(usage(
                     "discover needs a description, e.g. discover rainy day jazz",
                 ));
             }
-            Command::Discover {
-                request: words.join(" "),
-                json,
-            }
+            (
+                Command::Discover {
+                    request: r.words.join(" "),
+                },
+                r.json,
+            )
         }
         "shutdown" => {
-            no_more(&mut p)?;
-            Command::Shutdown
+            let r = rest(&mut p, &[])?;
+            no_words(&r, "shutdown")?;
+            (Command::Shutdown, false)
         }
         "daemon" | "mcp" => {
             return Err(usage(format!(
@@ -235,67 +318,21 @@ where
         }
         other => match Simple::from_name(other) {
             Some(s) => {
-                no_more(&mut p)?;
-                Command::Simple(s)
+                let r = rest(&mut p, &["json"])?;
+                no_words(&r, other)?;
+                (Command::Simple(s), r.json)
             }
             None => return Err(usage(format!("unknown command: {other}"))),
         },
     };
-    Ok(cmd)
+    Ok(Invocation { command, json })
 }
 
-fn parse_post(p: &mut lexopt::Parser, play: bool) -> Result<Command, UsageError> {
-    let (mut words, mut title, mut next) = (Vec::new(), None, false);
-    while let Some(arg) = p.next()? {
-        match arg {
-            Long("title") => title = Some(string(p.value()?)?),
-            Long("next") if !play => next = true,
-            Value(v) => words.push(string(v)?),
-            other => return Err(other.unexpected().into()),
-        }
+fn plain(command: Command) -> Invocation {
+    Invocation {
+        command,
+        json: false,
     }
-    if words.is_empty() {
-        return Err(usage(
-            "missing input: a link, a file or some words to search",
-        ));
-    }
-    let input = words.join(" ");
-    Ok(if play {
-        Command::Play { input, title }
-    } else {
-        Command::Add { input, next, title }
-    })
-}
-
-fn json_only(p: &mut lexopt::Parser) -> Result<bool, UsageError> {
-    let mut json = false;
-    while let Some(arg) = p.next()? {
-        match arg {
-            Long("json") => json = true,
-            other => return Err(other.unexpected().into()),
-        }
-    }
-    Ok(json)
-}
-
-fn no_more(p: &mut lexopt::Parser) -> Result<(), UsageError> {
-    match p.next()? {
-        None => Ok(()),
-        Some(other) => Err(other.unexpected().into()),
-    }
-}
-
-/// The remaining arguments, unparsed: `-10` is a number here, not an option.
-fn raw_rest(p: &mut lexopt::Parser) -> Result<Vec<String>, UsageError> {
-    p.raw_args()?.map(string).collect()
-}
-
-fn one_raw(p: &mut lexopt::Parser, what: &str) -> Result<String, UsageError> {
-    let mut rest = raw_rest(p)?;
-    if rest.len() != 1 {
-        return Err(usage(what));
-    }
-    Ok(rest.remove(0))
 }
 
 /// `80` sets, `+5` / `-5` adjust. A trailing `%` is allowed.
@@ -353,7 +390,11 @@ mod tests {
     use super::*;
 
     fn p(args: &[&str]) -> Result<Command, UsageError> {
-        parse(args.iter().copied())
+        parse(args.iter().copied()).map(|i| i.command)
+    }
+
+    fn json(args: &[&str]) -> bool {
+        parse(args.iter().copied()).unwrap().json
     }
 
     #[test]
@@ -484,31 +525,53 @@ mod tests {
                 other => panic!("{name}: {other:?}"),
             }
             assert!(p(&[name, "extra"]).is_err());
+            assert!(json(&[name, "--json"]));
         }
     }
 
     #[test]
     fn listing_commands() {
-        assert_eq!(p(&["status"]), Ok(Command::Status { json: false }));
-        assert_eq!(p(&["status", "--json"]), Ok(Command::Status { json: true }));
-        assert_eq!(p(&["queue", "--json"]), Ok(Command::Queue { json: true }));
+        assert_eq!(p(&["status"]), Ok(Command::Status));
+        assert!(!json(&["status"]));
+        assert!(json(&["status", "--json"]));
+        assert!(json(&["queue", "--json"]));
+        assert_eq!(p(&["history"]), Ok(Command::History { limit: 50 }));
         assert_eq!(
             p(&["history", "--limit", "5", "--json"]),
-            Ok(Command::History {
-                limit: Some(5),
-                json: true
-            })
+            Ok(Command::History { limit: 5 })
         );
+        assert!(json(&["history", "--limit", "5", "--json"]));
         assert!(p(&["history", "--limit", "many"]).is_err());
         assert_eq!(
             p(&["discover", "rainy", "day", "jazz", "--json"]),
             Ok(Command::Discover {
-                request: "rainy day jazz".into(),
-                json: true
+                request: "rainy day jazz".into()
             })
         );
         assert!(p(&["discover"]).is_err());
         assert_eq!(p(&["shutdown"]), Ok(Command::Shutdown));
+        assert!(p(&["shutdown", "--json"]).is_err());
+    }
+
+    #[test]
+    fn json_on_every_command() {
+        assert!(json(&["play", "x", "--json"]));
+        assert!(json(&["add", "--json", "x"]));
+        assert!(json(&["jump", "2", "--json"]));
+        assert!(json(&["volume", "-5", "--json"]));
+        assert_eq!(
+            p(&["volume", "-5", "--json"]),
+            Ok(Command::Volume(Volume::Delta(-5.0)))
+        );
+        assert!(json(&["volume", "--json"]));
+        assert!(json(&["seek", "--json", "-10"]));
+        assert_eq!(
+            p(&["seek", "-10", "--json"]),
+            Ok(Command::Seek {
+                seconds: -10.0,
+                relative: true
+            })
+        );
     }
 
     #[test]

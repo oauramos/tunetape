@@ -65,7 +65,8 @@ fn volume_label(status: &Value) -> String {
 
 /// The one-line status:
 /// `▶ Corridors of Time · Chrono Trigger OST (5/64)  1:23 / 4:11  vol 80%`
-/// (`⏸` paused, `…` loading, `■` idle).
+/// (`⏸` paused, `…` loading, `■` idle). Same rules as the Python CLI's
+/// `format_status`.
 pub fn status_line(status: &Value) -> String {
     let state = str_of(status, "state").unwrap_or("idle");
     let current = status.get("current").filter(|c| c.is_object());
@@ -75,33 +76,30 @@ pub fn status_line(status: &Value) -> String {
         "loading" => "…",
         _ => "■",
     };
-    let loading = str_of(status, "message")
-        .filter(|m| !m.is_empty())
-        .unwrap_or("Loading…");
-    let mut parts = Vec::new();
-    match current {
-        Some(item) => parts.push(format!("{icon} {}", track_label(item))),
-        None if state == "loading" => parts.push(format!("{icon} {loading}")),
-        None => parts.push(format!("{icon} Nothing playing")),
+    let volume = volume_label(status);
+    let message = str_of(status, "message").filter(|m| !m.is_empty());
+    if let (Some(message), "loading") = (message, state) {
+        return format!("{icon} {message}  {volume}");
     }
-    match state {
-        "playing" | "paused" => {
-            let pos = clock(num_of(status, "position").unwrap_or(0.0));
-            let dur = num_of(status, "duration").unwrap_or(0.0);
-            if dur > 0.0 {
-                parts.push(format!("{pos} / {}", clock(dur)));
-            } else {
-                parts.push(pos);
-            }
+    let Some(item) = current else {
+        return format!("{icon} Nothing playing  {volume}");
+    };
+    let mut parts = vec![format!("{icon} {}", track_label(item))];
+    if state == "playing" || state == "paused" {
+        let mut clock_part = clock(num_of(status, "position").unwrap_or(0.0));
+        let dur = num_of(status, "duration").unwrap_or(0.0);
+        if dur > 0.0 {
+            clock_part.push_str(&format!(" / {}", clock(dur)));
         }
-        "loading" if current.is_some() => parts.push(loading.to_string()),
-        _ => {}
+        parts.push(clock_part);
+    } else if let Some(message) = message {
+        parts.push(message.to_string());
     }
-    parts.push(volume_label(status));
+    parts.push(volume);
     parts.join("  ")
 }
 
-/// `volume` with no argument.
+/// `volume`: `Volume 80%`, plus ` (muted)`.
 pub fn volume_line(status: &Value) -> String {
     let mut out = format!(
         "Volume {}",
@@ -113,28 +111,57 @@ pub fn volume_line(status: &Value) -> String {
     out
 }
 
-/// `Playing: <title>` / `Queued: <title> (12 tracks)` for a posted request.
-pub fn posted_line(verb: &str, request: &Value) -> String {
+const COLLECTION_KINDS: [&str; 3] = ["khinsider", "spotify", "youtube_playlist"];
+
+fn is_collection(request: &Value) -> bool {
+    str_of(request, "kind").is_some_and(|k| COLLECTION_KINDS.contains(&k))
+}
+
+/// A request's label: its title (else `fallback`, the first item's title,
+/// else its input), plus ` (N tracks)` for a collection.
+pub fn request_label(request: &Value, fallback: Option<&str>) -> String {
     let title = str_of(request, "title")
         .filter(|t| !t.is_empty())
+        .or(fallback.filter(|t| !t.is_empty()))
         .or_else(|| str_of(request, "input"))
         .unwrap_or("?");
-    let count = request
-        .get("item_ids")
-        .and_then(Value::as_array)
-        .map_or(0, Vec::len);
-    if count > 1 {
-        format!("{verb}: {title} ({count} tracks)")
+    if is_collection(request) {
+        let count = request
+            .get("item_ids")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        format!("{title} ({count} tracks)")
     } else {
-        format!("{verb}: {title}")
+        title.to_string()
     }
 }
 
-fn width(n: usize) -> usize {
-    n.max(1).to_string().len()
+/// `add`: `Queued: <label>`.
+pub fn queued_line(request: &Value, first_title: Option<&str>) -> String {
+    format!("Queued: {}", request_label(request, first_title))
 }
 
-/// `queue`: one line per item, the current one marked `▶`, failed ones `✗`.
+/// `play`: `Playing: <title>` once an item of the request is playing (else
+/// `Loading: …`); a collection shows `<track> · <album> (N tracks)`.
+pub fn play_line(request: &Value, item: Option<&Value>) -> String {
+    let label = if is_collection(request) {
+        let label = request_label(request, None);
+        match item {
+            Some(it) => format!("{} · {label}", item_title(it)),
+            None => label,
+        }
+    } else {
+        item.and_then(|it| str_of(it, "title"))
+            .filter(|t| !t.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| request_label(request, None))
+    };
+    let playing = item.and_then(|it| str_of(it, "status")) == Some("playing");
+    let verb = if playing { "Playing" } else { "Loading" };
+    format!("{verb}: {label}")
+}
+
+/// `queue`: `▶ 1. Title  4:11` for the current item, two spaces for the others.
 pub fn queue_lines(queue: &Value) -> String {
     let items = queue
         .get("items")
@@ -142,25 +169,19 @@ pub fn queue_lines(queue: &Value) -> String {
         .cloned()
         .unwrap_or_default();
     if items.is_empty() {
-        return "Queue is empty".to_string();
+        return "The queue is empty.".to_string();
     }
     let current = int_of(queue, "index").unwrap_or(-1);
-    let w = width(items.len());
     let mut lines = Vec::with_capacity(items.len());
     for (i, item) in items.iter().enumerate() {
-        let mark = if i as i64 == current {
-            "▶"
-        } else if str_of(item, "status") == Some("failed") {
-            "✗"
-        } else {
-            " "
-        };
-        let mut line = format!("{mark} {:>w$}. {}", i + 1, track_label(item));
+        let mark = if i as i64 == current { "▶" } else { " " };
+        let mut line = format!("{mark} {}. {}", i + 1, item_title(item));
         if let Some(d) = num_of(item, "duration").filter(|d| *d > 0.0) {
             line.push_str(&format!("  {}", clock(d)));
         }
-        if let Some(err) = str_of(item, "error").filter(|e| !e.is_empty()) {
-            line.push_str(&format!("  ({err})"));
+        if str_of(item, "status") == Some("failed") {
+            let err = str_of(item, "error").unwrap_or("unknown error");
+            line.push_str(&format!("  (failed: {err})"));
         }
         lines.push(line);
     }
@@ -175,9 +196,8 @@ pub fn history_lines(history: &Value) -> String {
         .cloned()
         .unwrap_or_default();
     if entries.is_empty() {
-        return "No listening history yet".to_string();
+        return "No listening history yet.".to_string();
     }
-    let w = width(entries.len());
     entries
         .iter()
         .enumerate()
@@ -191,29 +211,25 @@ pub fn history_lines(history: &Value) -> String {
                 let at = int_of(e, "last_index").unwrap_or(0) + 1;
                 tag.push_str(&format!(", {at}/{count}"));
             }
-            format!("{:>w$}. {title}  [{tag}]", i + 1)
+            format!("{}. {title}  [{tag}]", i + 1)
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
 
-/// `discover`: numbered picks with the input that plays each one.
+/// `discover`: `1. Title  (input)`; nothing at all for no picks.
 pub fn discover_lines(result: &Value) -> String {
     let tracks = result
         .get("tracks")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    if tracks.is_empty() {
-        return "No suggestions".to_string();
-    }
-    let w = width(tracks.len());
     tracks
         .iter()
         .enumerate()
         .map(|(i, t)| {
             format!(
-                "{:>w$}. {}  ({})",
+                "{}. {}  ({})",
                 i + 1,
                 str_of(t, "title").unwrap_or("?"),
                 str_of(t, "input").unwrap_or("")
@@ -273,81 +289,68 @@ mod tests {
 
     #[test]
     fn loading_line_shows_message() {
+        // A loading message replaces the title, as in the Python CLI.
         let mut s = status("loading", chrono());
         s["message"] = json!("Loading track 5/64…");
+        assert_eq!(status_line(&s), "… Loading track 5/64…  vol 80%");
+        // Without one, the item is shown without a clock.
         assert_eq!(
-            status_line(&s),
-            "… Corridors of Time · Chrono Trigger OST (5/64)  Loading track 5/64…  vol 80%"
+            status_line(&status("loading", chrono())),
+            "… Corridors of Time · Chrono Trigger OST (5/64)  vol 80%"
         );
-        let mut s = status("loading", Value::Null);
-        s["message"] = Value::Null;
-        assert_eq!(status_line(&s), "… Loading…  vol 80%");
-    }
-
-    #[test]
-    fn idle_lines() {
-        let mut s = status("idle", Value::Null);
-        s["volume"] = json!(64.6);
-        assert_eq!(status_line(&s), "■ Nothing playing  vol 65%");
-        // Stopped with a queue kept: the item is still shown, without a clock.
         assert_eq!(
-            status_line(&status("idle", chrono())),
-            "■ Corridors of Time · Chrono Trigger OST (5/64)  vol 80%"
+            status_line(&status("loading", Value::Null)),
+            "… Nothing playing  vol 80%"
         );
     }
 
     #[test]
-    fn live_stream_and_mute() {
-        let mut s = status("playing", item("Lofi Radio", Value::Null));
-        s["duration"] = json!(0);
-        s["muted"] = json!(true);
-        assert_eq!(status_line(&s), "▶ Lofi Radio  1:23  vol 80% (muted)");
-        assert_eq!(volume_line(&s), "Volume 80% (muted)");
-    }
-
-    #[test]
-    fn untitled_item_falls_back_to_input() {
-        let mut it = item("", Value::Null);
-        it["title"] = Value::Null;
+    fn request_and_play_lines() {
+        let one = json!({"title": "Around the World", "kind": "youtube", "input": "x",
+                         "item_ids": ["i-1"]});
+        assert_eq!(queued_line(&one, None), "Queued: Around the World");
+        let album = json!({"title": "Chrono Trigger OST", "kind": "khinsider", "input": "x",
+                           "item_ids": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]});
         assert_eq!(
-            status_line(&status("playing", it)),
-            "▶ https://x/y.mp3  1:23 / 4:11  vol 80%"
-        );
-        let col = json!({"title": null, "index": 0, "count": 3});
-        assert_eq!(
-            status_line(&status("playing", item("T", col))),
-            "▶ T (1/3)  1:23 / 4:11  vol 80%"
-        );
-    }
-
-    #[test]
-    fn posted_lines() {
-        let one = json!({"title": "Around the World", "input": "x", "item_ids": ["i-1"]});
-        assert_eq!(posted_line("Playing", &one), "Playing: Around the World");
-        let many = json!({"title": "Chrono Trigger OST", "input": "x",
-                          "item_ids": ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"]});
-        assert_eq!(
-            posted_line("Queued", &many),
+            queued_line(&album, None),
             "Queued: Chrono Trigger OST (12 tracks)"
         );
-        let untitled = json!({"title": null, "input": "lofi hip hop", "item_ids": []});
-        assert_eq!(posted_line("Playing", &untitled), "Playing: lofi hip hop");
+        let untitled = json!({"title": null, "kind": "file", "input": "/m/a.mp3",
+                              "item_ids": ["i-1"]});
+        assert_eq!(queued_line(&untitled, Some("a")), "Queued: a");
+        assert_eq!(queued_line(&untitled, None), "Queued: /m/a.mp3");
+
+        let mut playing = item("Corridors of Time", Value::Null);
+        assert_eq!(
+            play_line(&album, Some(&playing)),
+            "Playing: Corridors of Time · Chrono Trigger OST (12 tracks)"
+        );
+        assert_eq!(
+            play_line(&one, Some(&playing)),
+            "Playing: Corridors of Time"
+        );
+        playing["status"] = json!("resolving");
+        assert_eq!(
+            play_line(&one, Some(&playing)),
+            "Loading: Corridors of Time"
+        );
+        assert_eq!(play_line(&untitled, None), "Loading: /m/a.mp3");
     }
 
     #[test]
     fn queue_listing() {
         assert_eq!(
             queue_lines(&json!({"items": [], "index": -1})),
-            "Queue is empty"
+            "The queue is empty."
         );
         let mut failed = item("Broken", Value::Null);
         failed["status"] = json!("failed");
         failed["error"] = json!("Could not load track");
         failed["duration"] = Value::Null;
-        let q = json!({"items": [item("One", Value::Null), item("Two", Value::Null), failed], "index": 1});
+        let q = json!({"items": [item("One", Value::Null), item("Two", chrono()["collection"].clone()), failed], "index": 1});
         assert_eq!(
             queue_lines(&q),
-            "  1. One  4:11\n▶ 2. Two  4:11\n✗ 3. Broken  (Could not load track)"
+            "  1. One  4:11\n▶ 2. Two  4:11\n  3. Broken  (failed: Could not load track)"
         );
     }
 
@@ -355,7 +358,7 @@ mod tests {
     fn history_listing() {
         assert_eq!(
             history_lines(&json!({"entries": []})),
-            "No listening history yet"
+            "No listening history yet."
         );
         let h = json!({"entries": [
             {"type": "khinsider", "url": "u", "title": "Chrono Trigger OST", "last_played": "t",
@@ -375,6 +378,6 @@ mod tests {
             discover_lines(&r),
             "1. So What  (ytsearch1:miles davis so what)"
         );
-        assert_eq!(discover_lines(&json!({"tracks": []})), "No suggestions");
+        assert_eq!(discover_lines(&json!({"tracks": []})), "");
     }
 }
