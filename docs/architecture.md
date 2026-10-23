@@ -113,17 +113,34 @@ tunetape mcp                          MCP server on stdio (Python CLI only)
 (`Playing: <title>` / `Queued: <title> (12 tracks)`), so a bad link is reported
 right away. `status` prints one line, e.g.
 `▶ Corridors of Time · Chrono Trigger OST (5/64)  1:23 / 4:11  vol 80%`
-(`⏸` paused, `…` loading, `■` idle). `--json` prints the method's raw result.
+(`⏸` paused, `…` loading, `■` idle). `--json` prints the method's raw result,
+pretty-printed with a 2-space indent in the daemon's key order.
+
+The other commands print, so both CLIs match:
+
+- player commands (`pause`, `next`, `seek`, …): the status line; `clear`: `Queue cleared`
+- `volume`: `Volume 80%`, plus ` (muted)` when muted
+- `queue`: `▶ 1. Title  4:11` for the current item, two spaces instead of `▶`
+  for the others (the duration only once known)
+- `history`: `1. Title  [khinsider, 5/64]` (`[youtube]` for a single track)
+- `discover`: `1. Title  (input)`
+- `shutdown` never starts a daemon; with none running it prints
+  `tunetape daemon is not running` and exits `0`
 
 Exit status: `0` ok, `1` the daemon returned an error (its message goes to
-stderr), `2` usage error, `3` the daemon could not be reached or started.
+stderr), `2` usage error, `3` the daemon could not be reached or started (a
+daemon answering `hello` with `1002` counts as unreachable; no new one is
+started).
 
 ## Test seams
 
 - `TUNETAPE_DATA_DIR` isolates a daemon and its clients (protocol §1.2).
 - `TUNETAPE_MPV` / `TUNETAPE_YTDLP`: a command line used instead of the `mpv` /
   `yt-dlp` executables, split with `shlex.split` (`posix=False` on Windows),
-  e.g. `TUNETAPE_MPV="/usr/bin/python3 tests/fakes/fake_mpv.py"`.
+  e.g. `TUNETAPE_MPV="/usr/bin/python3 tests/fakes/fake_mpv.py"`. An override
+  whose program (its first word, looked up on `PATH` or as a path) does not
+  exist counts as missing (`1011`), never as the real tool, so a test can
+  simulate an uninstalled yt-dlp.
 - `tests/fakes/fake_mpv.py` is a stand-in for mpv that needs no audio device:
   it accepts mpv's command line, serves mpv's JSON IPC on the
   `--input-ipc-server` endpoint (`get_property`/`set_property`/`cycle`/`seek`/

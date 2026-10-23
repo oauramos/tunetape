@@ -2,12 +2,12 @@
 
 import importlib.util
 import json
-import os
+import re
 import time
 
 import pytest
 
-from conftest import needs_fake_mpv, run_tunetape
+from conftest import needs_fake_mpv, pid_alive, run_tunetape
 from tunetape import __version__, cli
 from tunetape.client import read_discovery
 
@@ -21,11 +21,7 @@ def tt(data_dir):
     if info:
         pid = info.get("pid")
         deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except OSError:
-                break
+        while pid and pid_alive(pid) and time.monotonic() < deadline:
             time.sleep(0.05)
 
 
@@ -114,15 +110,20 @@ def test_play_add_queue(tt, audio):
     r = tt("add", "daft", "punk", "--next", "--title", "Around the World")
     assert r.stdout.strip() == "Queued: Around the World"
     lines = tt("queue").stdout.splitlines()
-    assert lines == ["▶ 1. first-fake-dur-30", "  2. Around the World", "  3. second-fake-dur-30"]
-    assert tt("volume", "40").stdout.strip() == "vol 40%"
-    assert tt("volume", "+5").stdout.strip() == "vol 45%"
-    assert tt("volume").stdout.strip() == "vol 45%"
+    assert lines == ["▶ 1. first-fake-dur-30  0:30", "  2. Around the World",
+                     "  3. second-fake-dur-30"]
+    assert tt("volume", "40").stdout.strip() == "Volume 40%"
+    assert tt("volume", "+5").stdout.strip() == "Volume 45%"
+    assert tt("volume").stdout.strip() == "Volume 45%"
     assert tt("pause").stdout.startswith("⏸ first-fake-dur-30")
     assert tt("seek", "0:10").stdout.startswith("⏸ first-fake-dur-30  0:10")
     r = tt("jump", "3")  # 1-based: the third item
     assert r.returncode == 0 and "second-fake-dur-30" in r.stdout
     assert json.loads(tt("history", "--json").stdout)["entries"][0]["type"] == "file"
+    assert re.match(r"^1\. (first|second)-fake-dur-30  \[file\]$",
+                    tt("history").stdout.splitlines()[0])
+    assert tt("clear").stdout.strip() == "Queue cleared"
+    assert tt("queue").stdout.strip() == "The queue is empty."
 
 
 @needs_fake_mpv
@@ -150,7 +151,8 @@ def test_unreachable_daemon_exits_3(tmp_path, monkeypatch, data_dir):
 
 def test_shutdown_without_a_daemon(data_dir):
     r = run_tunetape("shutdown")
-    assert r.returncode == 0 and "not running" in r.stdout
+    assert r.returncode == 0 and r.stdout.strip() == "tunetape daemon is not running"
+    assert read_discovery() is None  # and it did not start one
 
 
 @pytest.mark.skipif(importlib.util.find_spec("tunetape.mcp_server") is not None,

@@ -101,22 +101,16 @@ def open_endpoint(info: dict, timeout: float) -> socket.socket:
 def _spawn_daemon():
     """Start ``python -m tunetape daemon`` detached from this process and terminal."""
     data_dir = paths.data_dir()
-    log = None
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-        # Anything the daemon prints before its own log is up (an import error,
-        # say) lands here; the daemon then appends to the same file.
-        log = open(os.path.join(data_dir, "daemon.log"), "ab")
-    except OSError:
-        pass
     env = dict(os.environ)
     # Make the child import this same tunetape, even from a source checkout.
     pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env["PYTHONPATH"] = os.pathsep.join(p for p in (pkg_parent, env.get("PYTHONPATH")) if p)
     kwargs = {
+        # Null stdio: the daemon writes its own log, and must not hold the
+        # caller's terminal (or its pipes) open after the caller exits.
         "stdin": subprocess.DEVNULL,
-        "stdout": log if log is not None else subprocess.DEVNULL,
-        "stderr": subprocess.STDOUT if log is not None else subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
         "env": env,
         "close_fds": True,
         # Not the caller's cwd: the daemon outlives it, and on Windows a process
@@ -132,9 +126,6 @@ def _spawn_daemon():
         proc = subprocess.Popen([sys.executable, "-m", "tunetape", "daemon"], **kwargs)
     except OSError as e:
         raise DaemonUnavailable(f"Could not start the tunetape daemon: {e}")
-    finally:
-        if log is not None:
-            log.close()
     # Reap it when it eventually exits, so a long-lived client leaves no zombie.
     threading.Thread(target=proc.wait, name="tunetape-daemon-reaper", daemon=True).start()
     return proc

@@ -6,6 +6,9 @@ by default and the method's raw result with ``--json``.
 
 Exit status: 0 ok, 1 the daemon returned an error (its message goes to stderr),
 2 usage error, 3 the daemon could not be reached or started.
+
+The output formats are shared with the Rust ``tunetape-cli``, so scripts can
+use either; change them in both or in neither.
 """
 
 import argparse
@@ -84,7 +87,12 @@ def _request_label(request: dict, items=None) -> str:
 
 
 def _print_json(value) -> None:
+    # Two-space indent, keys in the daemon's order (json keeps dict order).
     print(json.dumps(value, indent=2, ensure_ascii=False))
+
+
+def _volume_line(status: dict) -> str:
+    return f"Volume {round(status.get('volume') or 0)}%" + (" (muted)" if status.get("muted") else "")
 
 
 # -- argument helpers ---------------------------------------------------------
@@ -194,11 +202,12 @@ def _cmd_add(client, args):
 def _simple(method):
     def run(client, args):
         result = getattr(client, method)()
-        status = result if "state" in result else client.status()
         if args.json:
             _print_json(result)
+        elif method == "clear":
+            print("Queue cleared")
         else:
-            print(format_status(status))
+            print(format_status(result))
         return EXIT_OK
     return run
 
@@ -221,10 +230,11 @@ def _cmd_queue(client, args):
     if not items:
         print("The queue is empty.")
         return EXIT_OK
-    width = len(str(len(items)))
     for n, item in enumerate(items):
         mark = "▶" if n == result["index"] else " "
-        line = f"{mark} {n + 1:>{width}}. {item['title']}"
+        line = f"{mark} {n + 1}. {item.get('title') or item.get('input')}"
+        if item.get("duration"):
+            line += f"  {_clock(item['duration'])}"
         if item["status"] == "failed":
             line += f"  (failed: {item.get('error')})"
         print(line)
@@ -251,7 +261,7 @@ def _cmd_volume(client, args):
     if args.json:
         _print_json(status)
     else:
-        print(f"vol {round(status['volume'])}%" + (" (muted)" if status.get("muted") else ""))
+        print(_volume_line(status))
     return EXIT_OK
 
 
@@ -284,10 +294,11 @@ def _cmd_history(client, args):
     entries = result["entries"]
     if not entries:
         print("No listening history yet.")
-    for entry in entries:
-        extra = f", {entry['track_count']} tracks" if entry.get("track_count") else ""
-        print(f"{entry.get('title')}  ({entry.get('type')}{extra}, "
-              f"played {entry.get('play_count', 1)}×)  {entry.get('url')}")
+    for n, entry in enumerate(entries, 1):
+        tag = entry.get("type") or "?"
+        if entry.get("track_count"):
+            tag += f", {int(entry.get('last_index') or 0) + 1}/{entry['track_count']}"
+        print(f"{n}. {entry.get('title') or entry.get('url')}  [{tag}]")
     return EXIT_OK
 
 
@@ -300,15 +311,15 @@ def _cmd_discover(client, args):
         _print_json(result)
         return EXIT_OK
     for n, track in enumerate(result["tracks"], 1):
-        print(f"{n:>2}. {track['title']}")
+        print(f"{n}. {track['title']}  ({track['input']})")
     return EXIT_OK
 
 
 def _cmd_shutdown(args):
     try:
-        client = Client.connect(spawn=False)
+        client = Client.connect(spawn=False)  # never start one just to stop it
     except DaemonUnavailable:
-        print("The tunetape daemon is not running.")
+        print("tunetape daemon is not running")
         return EXIT_OK
     with client:
         client.shutdown()
@@ -400,7 +411,14 @@ def main(argv) -> int:
     try:
         if args.command == "shutdown":
             return _cmd_shutdown(args)
-        with Client.connect(name="tunetape-cli") as client:
+        try:
+            client = Client.connect(name="tunetape-cli")
+        except DaemonError as e:
+            # A daemon that speaks another protocol (1002) can't be used; it
+            # counts as unreachable, like a daemon that would not start.
+            print(f"tunetape: {e}", file=sys.stderr)
+            return EXIT_UNAVAILABLE
+        with client:
             return args.func(client, args)
     except _UsageError as e:
         print(f"tunetape {args.command}: error: {e}", file=sys.stderr)
