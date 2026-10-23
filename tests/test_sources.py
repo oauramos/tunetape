@@ -35,10 +35,12 @@ from tunetape.sources import SourceError, classify
     ("https://soundcloud.com/artist/track", "generic"),
     ("https://example.com/page.html", "generic"),
     ("https://example.com/song.mp3.html", "generic"),
-    # 9. Words, including ones with a colon that isn't a URL scheme.
+    # 9. Words. A colon only makes a scheme when the input has no whitespace.
     ("daft punk around the world", "search"),
     ("Re:Zero opening", "search"),
     ("artist: song title", "search"),
+    ("lavfi:sine with spaces", "search"),  # only ever reaches yt-dlp as a search
+    ("C:/not/a/path/on/posix" if sys.platform != "win32" else "plain words", "search"),
 ])
 def test_classify(text, kind):
     assert classify(text) == kind
@@ -53,7 +55,8 @@ def test_khinsider_outranks_direct():
 @pytest.mark.parametrize("text", [
     "ftp://example.com/song.mp3", "av://dshow:video=x", "lavfi:sine", "memory:abc",
     "rtsp://camera/stream", "smb://server/share/a.mp3", "data:audio/mp3;base64,AAAA",
-    "whatever://thing", "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF",
+    "whatever://thing", "spotify:artist:0OdUWJ0sBjDrqHygGUXeCF", "Re:Zero",
+    "localhost:8080/x.mp3",
 ])
 def test_other_schemes_are_rejected(text):
     with pytest.raises(SourceError) as e:
@@ -80,11 +83,24 @@ def test_local_files(tmp_path, monkeypatch):
     assert sources.canonical_input("~/My Song.mp3", "file") == str(song)
 
 
-def test_missing_file_is_an_error_not_a_search(tmp_path):
+@pytest.mark.parametrize("text", [
+    "/no/such/file.mp3", "~/no-such-file.mp3", "./no-such-file.mp3", "../no-such.mp3",
+    "file:///no/such/file.mp3",
+])
+def test_missing_file_is_an_error_not_a_search(text):
     with pytest.raises(SourceError) as e:
-        classify(str(tmp_path / "nope.mp3"))
+        classify(text)
     assert e.value.code == 1010
-    assert "No such file" in e.value.message
+    assert e.value.message.startswith("No such file: ")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows path forms")
+@pytest.mark.parametrize("text", ["C:\\no\\such.mp3", "c:/no/such.mp3",
+                                  "\\\\server\\share\\no.mp3"])
+def test_windows_paths_are_paths(text):
+    with pytest.raises(SourceError) as e:
+        classify(text)
+    assert e.value.message.startswith("No such file: ")
 
 
 def test_remote_file_url_is_rejected():
@@ -145,9 +161,23 @@ def test_tool_command_override(monkeypatch):
 
 def test_override_counts_as_installed(monkeypatch):
     monkeypatch.setattr(player, "find_executable", lambda name: None)
-    monkeypatch.setenv("TUNETAPE_MPV", "fake-mpv")
-    monkeypatch.setenv("TUNETAPE_YTDLP", "fake-ytdlp")
+    monkeypatch.setenv("TUNETAPE_MPV", f'"{sys.executable}" fake_mpv.py')
+    monkeypatch.setenv("TUNETAPE_YTDLP", f'"{sys.executable}" fake_ytdlp.py')
     player.check_dependencies(require_ytdlp=True)  # does not raise
+
+
+def test_override_to_nothing_counts_as_missing(monkeypatch):
+    # Even with the real tool installed, a dangling override means "missing":
+    # that is how a test simulates an uninstalled yt-dlp.
+    monkeypatch.setattr(player, "find_executable", lambda name: "/usr/bin/" + name)
+    monkeypatch.setenv("TUNETAPE_MPV", f'"{sys.executable}" fake_mpv.py')
+    monkeypatch.setenv("TUNETAPE_YTDLP", "/nonexistent/yt-dlp --flag")
+    assert player.tool_command("yt-dlp") is None
+    assert player._tool_argv("yt-dlp") == ["/nonexistent/yt-dlp", "--flag"]
+    with pytest.raises(SourceError) as e:
+        sources.check_dependencies("search")
+    assert e.value.code == 1011
+    sources.check_dependencies("file")
 
 
 def test_missing_dependency_is_1011(monkeypatch):
@@ -158,7 +188,7 @@ def test_missing_dependency_is_1011(monkeypatch):
         sources.check_dependencies("file")
     assert e.value.code == 1011 and "mpv" in e.value.message
 
-    monkeypatch.setenv("TUNETAPE_MPV", "fake-mpv")
+    monkeypatch.setenv("TUNETAPE_MPV", f'"{sys.executable}"')
     sources.check_dependencies("file")  # mpv is enough for a local file
     sources.check_dependencies("direct")
     for kind in ("search", "youtube", "spotify", "youtube_playlist", "generic"):

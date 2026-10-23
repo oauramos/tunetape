@@ -12,7 +12,9 @@ Knobs, all optional:
 - ``fake-dur-<seconds>`` in the media argument overrides FAKE_MPV_DURATION
   for that one launch, e.g. ``/tmp/song-fake-dur-30.mp3``;
 - ``FAKE_MPV_LOG=<path>`` appends one JSON line per launch with the argv, so a
-  test can check the flags tunetape passed (``--volume``, ``--af``).
+  test can check the flags tunetape passed (``--volume``, ``--af``);
+- ``FAKE_MPV_SLOW_QUIT=<seconds>`` plays a wedged mpv: it ignores SIGTERM and
+  lingers that long after a ``quit`` command.
 
 POSIX serves a Unix socket. Windows serves a named pipe through pywin32 (a
 tunetape dependency there); that path has not been exercised on a real Windows
@@ -22,6 +24,7 @@ machine, so the tests that need it skip on Windows.
 import json
 import os
 import re
+import signal
 import sys
 import threading
 import time
@@ -174,7 +177,11 @@ class FakePlayer:
                 self.position = max(0.0, min(target, self.duration))
             return {"error": "success"}
         if op in ("quit", "stop"):
-            self.done.set()
+            slow = float(os.environ.get("FAKE_MPV_SLOW_QUIT", "0") or 0)
+            if slow:
+                threading.Timer(slow, self.done.set).start()
+            else:
+                self.done.set()
             return {"error": "success"}
         return {"error": "invalid parameter"}
 
@@ -292,6 +299,8 @@ def main(argv):
     if log:
         with open(log, "a", encoding="utf-8") as f:
             f.write(json.dumps({"argv": argv, "pid": os.getpid()}) + "\n")
+    if os.environ.get("FAKE_MPV_SLOW_QUIT") and hasattr(signal, "SIGTERM"):
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
     if "fake-fail" in (player.media or ""):
         sys.stderr.write("fake mpv: refusing to open %s\n" % player.media)
         return 2

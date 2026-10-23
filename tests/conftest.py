@@ -24,7 +24,10 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only beha
 
 
 def _command(script: str) -> str:
-    return " ".join(shlex.quote(p) for p in (sys.executable, os.path.join(FAKES, script)))
+    parts = (sys.executable, os.path.join(FAKES, script))
+    if sys.platform == "win32":  # split with posix=False, which keeps only "…" quoting
+        return " ".join(f'"{p}"' for p in parts)
+    return " ".join(shlex.quote(p) for p in parts)
 
 
 @pytest.fixture
@@ -57,6 +60,23 @@ def audio(tmp_path):
         return str(p)
 
     return make
+
+
+def pid_alive(pid) -> bool:
+    """Whether a process exists, without signalling it.
+
+    Not os.kill(pid, 0): on Windows signal 0 is CTRL_C_EVENT, which would
+    interrupt a whole console process group.
+    """
+    if sys.platform == "win32":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                             capture_output=True, text=True)
+        return str(pid) in out.stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
 
 
 def run_tunetape(*args, env=None, timeout=60):

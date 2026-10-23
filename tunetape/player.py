@@ -101,23 +101,32 @@ def _split_command(text: str) -> list:
             for tok in shlex.split(text, posix=False)]
 
 
+def _override(name: str):
+    env = _TOOL_OVERRIDES.get(name)
+    text = os.environ.get(env, "").strip() if env else ""
+    return (_split_command(text) or None) if text else None
+
+
 def tool_command(name: str):
     """The argv prefix that runs ``name`` ("mpv" or "yt-dlp"), or None if missing.
 
-    ``$TUNETAPE_MPV`` / ``$TUNETAPE_YTDLP`` override the executable lookup with
-    a whole command line; an override always counts as present.
+    ``$TUNETAPE_MPV`` / ``$TUNETAPE_YTDLP`` replace the executable lookup with a
+    whole command line. An override whose program doesn't exist counts as
+    missing (it never falls back to the real tool), so a test can simulate an
+    uninstalled yt-dlp by pointing the override at nothing.
     """
-    env = _TOOL_OVERRIDES.get(name)
-    override = os.environ.get(env, "").strip() if env else ""
-    if override:
-        return _split_command(override)
+    argv = _override(name)
+    if argv is not None:
+        exe = argv[0]
+        return argv if (shutil.which(exe) or os.path.isfile(exe)) else None
     exe = find_executable(name)
     return [exe] if exe else None
 
 
 def _tool_argv(name: str) -> list:
-    """Like tool_command, but falls back to the bare name so the OS reports it."""
-    return tool_command(name) or [name]
+    """The command to launch: the override as given (the OS then reports a bad
+    one), else the located tool, else the bare name."""
+    return _override(name) or tool_command(name) or [name]
 
 
 def _install_hint(pkg: str) -> str:
@@ -617,16 +626,26 @@ class MPVController:
                 return
             self._closed = True
 
+        asked = False
         try:
             if self._ipc.connected:
                 msg = json.dumps({"command": ["quit"]}) + "\n"
                 self._ipc.send(msg.encode())
+                asked = True
         except Exception:
             pass
         try:
             if self._proc is not None:
-                self._proc.terminate()
-                self._proc.wait(timeout=3)
+                # mpv normally exits on the quit command at once; give it a
+                # moment to, then insist, then kill — teardown stays bounded.
+                if asked:
+                    try:
+                        self._proc.wait(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        pass
+                if self._proc.poll() is None:
+                    self._proc.terminate()
+                    self._proc.wait(timeout=1.5)
         except Exception:
             try:
                 self._proc.kill()

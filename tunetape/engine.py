@@ -446,8 +446,10 @@ class Engine:
         self._spawn(self._play_worker, self._gen, item, [c for c in (old, previous) if c])
 
     def _play_worker(self, gen, item, to_quit) -> None:
+        # The old mpv is told to quit at once but torn down on the side, so a
+        # slow exit never holds the next item in "loading".
         for c in to_quit:
-            self._quit(c)
+            self._spawn(self._quit, c)
 
         try:
             stream = sources.resolve(item.track, item.kind)

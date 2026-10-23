@@ -4,6 +4,7 @@ Every test runs against its own TUNETAPE_DATA_DIR, so it never meets the
 user's daemon, and every daemon started here is stopped (or killed) after.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -18,7 +19,7 @@ import time
 
 import pytest
 
-from conftest import REPO, needs_fake_mpv, posix_only
+from conftest import REPO, needs_fake_mpv, pid_alive, posix_only
 from tunetape import daemon as daemon_mod
 from tunetape.client import (Client, DaemonError, DaemonTimeout, DaemonUnavailable,
                              discovery_path, open_endpoint, read_discovery)
@@ -28,17 +29,6 @@ def _env():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(p for p in (REPO, env.get("PYTHONPATH")) if p)
     return env
-
-
-def _alive(pid):
-    if sys.platform == "win32":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}"], capture_output=True, text=True)
-        return str(pid) in out.stdout
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
 
 
 def wait_for(predicate, timeout=10.0):
@@ -352,7 +342,7 @@ def test_spawn_on_demand(data_dir):
         pid = c.hello["pid"]
         assert c.status()["state"] == "idle"
         c.shutdown()
-    wait_for(lambda: not _alive(pid), 10)
+    wait_for(lambda: not pid_alive(pid), 10)
     assert not os.path.exists(discovery_path())
 
 
@@ -380,7 +370,7 @@ def test_parallel_spawns_end_up_with_one_daemon(data_dir):
         for c in clients:
             c.close()
         if pid:
-            wait_for(lambda: not _alive(pid), 10)
+            wait_for(lambda: not pid_alive(pid), 10)
 
 
 def test_call_timeout(data_dir):
@@ -421,3 +411,5 @@ def test_socket_path_rules(tmp_path):
     b = daemon_mod.socket_path(long_dir + "y")
     assert len(a.encode()) < 100 and a != b
     assert os.path.basename(os.path.dirname(a)) == f"tunetape-{os.getuid()}"
+    digest = hashlib.sha256(long_dir.encode()).hexdigest()[:12]
+    assert os.path.basename(a) == f"{digest}.sock"

@@ -15,6 +15,7 @@ This module owns the three steps the daemon's engine runs on it:
 
 import os
 import re
+import sys
 import urllib.parse
 import urllib.request
 
@@ -35,22 +36,9 @@ AUDIO_EXTENSIONS = (".mp3", ".m4a", ".aac", ".flac", ".ogg", ".oga", ".opus",
 ERR_UNSUPPORTED = 1010
 ERR_MISSING_DEPENDENCY = 1011
 
-_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]*):")
-# Schemes that mpv, ffmpeg or yt-dlp would act on. An input that starts with
-# one of these, or with any ``scheme://``, is a URL and must be http(s) to be
-# accepted: handing ``lavfi:`` or ``av://`` to mpv would let a client open
-# devices and filter graphs. Anything else with a colon ("Re:Zero opening") is
-# just words, which only ever reach yt-dlp as a search.
-_KNOWN_SCHEMES = {
-    "about", "appending", "av", "bd", "bluray", "cdda", "concat", "crypto",
-    "data", "dav", "davs", "dvb", "dvd", "dvdnav", "edl", "fd", "fdclose",
-    "file", "ftp", "ftps", "gopher", "gophers", "hls", "http", "https", "ipfs",
-    "ipns", "javascript", "lavf", "lavfi", "mailto", "memory", "mf", "mms",
-    "mmsh", "mmst", "mpv", "null", "pipe", "rtmp", "rtmpe", "rtmps", "rtmpt",
-    "rtmpte", "rtmpts", "rtp", "rtsp", "rtsps", "sftp", "slice", "smb", "spotify",
-    "srt", "srtp", "subfile", "tcp", "tee", "tls", "udp", "unix", "v4l2", "ytdl",
-    "ytsearch",
-}
+# A scheme of two or more characters: one letter would be a Windows drive.
+_SCHEME_RE = re.compile(r"^([A-Za-z][A-Za-z0-9+.\-]+):")
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class SourceError(Exception):
@@ -63,10 +51,13 @@ class SourceError(Exception):
 
 
 def _is_url(text: str) -> bool:
-    m = _SCHEME_RE.match(text)
-    if not m:
-        return False
-    return text[m.end():].startswith("//") or m.group(1).lower() in _KNOWN_SCHEMES
+    """A ``scheme:`` prefix and no whitespace anywhere (protocol §3.1).
+
+    URLs never contain spaces, so "artist: song" stays words. Anything that is
+    a URL must be http(s) to be played: handing ``lavfi:`` or ``av://`` to mpv
+    would let a client open devices and filter graphs.
+    """
+    return bool(_SCHEME_RE.match(text)) and not re.search(r"\s", text)
 
 
 def _is_http(text: str) -> bool:
@@ -74,8 +65,11 @@ def _is_http(text: str) -> bool:
 
 
 def _looks_like_path(text: str) -> bool:
-    return (text == "~" or text.startswith(("~/", "~" + os.sep))
-            or text.lower().startswith("file:") or os.path.isabs(text))
+    if text.startswith(("/", "~/", "./", "../")) or text.lower().startswith("file:"):
+        return True
+    if sys.platform == "win32":
+        return bool(_WIN_DRIVE_RE.match(text)) or text.startswith(("\\\\", "~\\", ".\\", "..\\"))
+    return False
 
 
 def local_path(text: str) -> str:

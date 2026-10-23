@@ -110,6 +110,20 @@ def test_next_prev_jump(engine, audio):
     assert e.value.code == -32602
 
 
+def test_a_wedged_mpv_does_not_hold_up_the_next_item(engine, audio, monkeypatch):
+    # The old mpv ignores SIGTERM and lingers 3s after quit; skipping (here
+    # while paused) must still start the next item at once.
+    monkeypatch.setenv("FAKE_MPV_SLOW_QUIT", "3")
+    engine.add(audio("a-fake-dur-30.mp3"))
+    engine.add(audio("b-fake-dur-30.mp3"))
+    wait_for(lambda: state(engine) == "playing")
+    engine.pause()
+    start = time.monotonic()
+    engine.jump(1)
+    wait_for(lambda: state(engine) == "playing" and engine.status()["index"] == 1)
+    assert time.monotonic() - start < 1.5
+
+
 def test_at_now_and_next(engine, audio):
     engine.add(audio("first-fake-dur-30.mp3"))
     engine.add(audio("last-fake-dur-30.mp3"))

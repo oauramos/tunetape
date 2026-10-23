@@ -68,15 +68,15 @@ def _transport() -> str:
 def socket_path(data_dir: str) -> str:
     """Where the Unix socket goes (protocol §1.2).
 
-    ``<data_dir>/daemon.sock`` when that fits in sun_path; otherwise a private
-    directory under the temp dir. The fallback name carries a hash of the data
-    dir so two isolated instances (tests, TUNETAPE_DATA_DIR) never collide.
+    ``<data_dir>/daemon.sock`` when that fits in sun_path; otherwise
+    ``<tmpdir>/tunetape-<uid>/<sha256(data_dir)[:12]>.sock``, the hash keeping
+    two isolated instances (tests, TUNETAPE_DATA_DIR) from colliding.
     """
     path = os.path.join(data_dir, "daemon.sock")
     if len(path.encode("utf-8")) < _SOCKET_PATH_MAX:
         return path
-    digest = hashlib.sha1(os.path.abspath(data_dir).encode("utf-8")).hexdigest()[:12]
-    name = os.path.join(f"tunetape-{os.getuid()}", f"daemon-{digest}.sock")
+    digest = hashlib.sha256(data_dir.encode("utf-8")).hexdigest()[:12]
+    name = os.path.join(f"tunetape-{os.getuid()}", f"{digest}.sock")
     path = os.path.join(tempfile.gettempdir(), name)
     if len(path.encode("utf-8")) >= _SOCKET_PATH_MAX:
         path = os.path.join("/tmp", name)  # a long $TMPDIR: /tmp always fits
@@ -554,7 +554,8 @@ class Server:
             record.update(transport="tcp", host="127.0.0.1", port=sock.getsockname()[1],
                           token=self.token)
         sock.listen(16)
-        sock.settimeout(0.25)
+        # Short, so a stop request is noticed within a tenth of a second.
+        sock.settimeout(0.1)
         self._listener = sock
         record["started_at"] = self.started_at
         return record
@@ -603,8 +604,9 @@ class Server:
             conns = list(self._conns)
         for conn in conns:
             conn.close(flush=True)
+        deadline = time.monotonic() + 1.0
         for conn in conns:
-            conn.done.wait(1.0)
+            conn.done.wait(max(0.0, deadline - time.monotonic()))
         if self._listener is not None:
             self._listener.close()
         # Only remove what is ours: a newer daemon may already have replaced it.
