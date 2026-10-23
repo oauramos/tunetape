@@ -151,7 +151,7 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
     text-overflow: ellipsis;
 }
 #queue:focus { border: round $primary; }
-PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
+#queue.-single, PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
 PlayerScreen.-compact #player-body { padding: 0; }
 """
 
@@ -279,7 +279,7 @@ class TunetapeApp(App):
 
     def _present(self, screen) -> None:
         if screen in self.screen_stack:
-            return  # the player, reused for the next track
+            return  # already up
         if isinstance(screen, ModalScreen):
             self.push_screen(screen)
             return
@@ -721,22 +721,35 @@ def show_debug() -> Optional[str]:
 
 # --- the player ------------------------------------------------------------
 
-def play(title: str, controller, playlist_info: dict = None, *, source: str = None,
-         subtitle: str = None, tracks: list = None) -> str:
-    """Play on the player screen until the user leaves or the track ends.
+def play(client) -> str:
+    """Show the daemon's queue on the player until the user leaves or it runs out.
 
-    Returns 'menu', 'quit', 'next_track', 'prev_track' or 'jump_track:<n>'.
-    The next track of the same album reuses the screen already up.
+    Returns 'menu' (b, or nothing left to play: the music, if any, keeps
+    going) or 'quit'. A failure that stopped playback is shown before it
+    returns; a daemon that went away raises DaemonUnavailable.
     """
-    def build():
-        top = _app.flow_screen
-        if isinstance(top, PlayerScreen) and tracks and top.tracks == tracks:
-            top.load(title, controller, playlist_info)
-            return top
-        return PlayerScreen(title, controller, playlist_info, source=source,
-                            subtitle=subtitle, tracks=tracks)
+    from tunetape.client import DaemonUnavailable
 
-    return _ask(build)
+    status = client.status()
+    if status.get("state") == "idle":
+        if status.get("message"):
+            show_error(status["message"])  # it failed before the player was up
+        return "menu"
+    items = client.queue().get("items", [])
+    shown = []
+
+    def build():
+        screen = PlayerScreen(client, status, items)
+        shown.append(screen)
+        return screen
+
+    result = _ask(build)
+    screen = shown[0]
+    if screen.lost is not None:
+        raise DaemonUnavailable(screen.lost)
+    if screen.notice:
+        show_error(screen.notice)
+    return "quit" if result == "quit" else "menu"
 
 
 __all__ = [
