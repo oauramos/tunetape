@@ -1,11 +1,12 @@
 """tunetape's interface: one Textual app for the whole session.
 
-The session flow in ``__main__`` (menu → fetch → play → back to the menu) is
-plain blocking code. ``run_session`` starts the Textual app on the main thread
-and runs that flow on a worker thread; each function below shows a screen and
-blocks the flow until the screen answers, returning what the old Rich prompt
-of the same name returned. Slow work (yt-dlp, the AI) runs on the flow thread
-while the app keeps animating.
+The session flow in ``__main__`` (menu → post to the daemon → player → back
+to the menu) is plain blocking code. ``run_session`` starts the Textual app on
+the main thread and runs that flow on a worker thread; each function below
+shows a screen and blocks the flow until the screen answers, returning what
+the old Rich prompt of the same name returned. Slow calls (a post the daemon
+is still fetching, the AI) run on the flow thread while the app keeps
+animating.
 """
 
 import os
@@ -337,7 +338,7 @@ def run_session(flow) -> None:
     finally:
         app._session_done.set()
         if app._session_thread is not None:
-            # Give the flow a moment to stop mpv and save the volume.
+            # Give the flow a moment to stop playback in the daemon.
             app._session_thread.join(timeout=3)
         _app = None
     saved = config.get_setting("theme")
@@ -695,8 +696,46 @@ def show_help() -> Optional[str]:
     return _ask(HelpModal)
 
 
-def show_debug() -> Optional[str]:
-    """The Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
+def _log_line(ts: datetime, level: str, msg: str) -> Content:
+    color = {"ERROR": "$error", "WARN": "$warning", "WARNING": "$warning"}.get(
+        level, "$foreground 50%")
+    try:
+        stamp = ts.astimezone().strftime("%H:%M:%S")
+    except (ValueError, OSError, AttributeError):
+        stamp = "--:--:--"
+    return Content.from_markup(
+        f"[$foreground 50%]$stamp[/] [{color}]$level[/] $msg",
+        stamp=stamp, level=f"{level:<5}", msg=msg,
+    )
+
+
+def _daemon_records(entries: list) -> list:
+    """``daemon.log`` entries (protocol §4.5) as (time, level, message) records."""
+    records = []
+    for entry in entries:
+        try:
+            ts = datetime.strptime(str(entry.get("time")), "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            ts = None
+        records.append((ts, str(entry.get("level") or "INFO").upper(),
+                        str(entry.get("message", ""))))
+    return records
+
+
+def _hint(text: str) -> Content:
+    return Content.from_markup("[$foreground 50%]$t[/]", t=text)
+
+
+def show_debug(daemon_log=None) -> Optional[str]:
+    """The Debug/Logs viewer. Returns 'quit' to quit, else None (back).
+
+    Two logs, one after the other: this window's, then the daemon's, which
+    does the playing and so has most of the story. ``daemon_log()`` returns
+    (a heading such as 'tunetape/0.10.0 · pid 4123', the ``daemon.log``
+    entries), or raises DaemonError when the daemon can't be asked.
+    """
+    from tunetape.client import DaemonError, log_path
     from tunetape.player import tool_command
 
     while True:
@@ -709,20 +748,29 @@ def show_debug() -> Optional[str]:
             "[$foreground 60%]data dir[/] $dir",
             v=__version__, dir=paths.data_dir(),
         )
-        lines = []
-        for ts, level, msg in debug.entries()[-200:]:
-            color = {"ERROR": "$error", "WARN": "$warning", "WARNING": "$warning"}.get(
-                level, "$foreground 50%")
+        lines = [Content.from_markup("[b $primary]this window[/]")]
+        own = debug.entries()[-200:]
+        lines.extend(_log_line(*record) for record in own)
+        if not own:
+            lines.append(_hint("No events logged yet this session."))
+        if daemon_log is not None:
+            lines.append(Content(""))
             try:
-                stamp = ts.astimezone().strftime("%H:%M:%S")
-            except (ValueError, OSError):
-                stamp = "--:--:--"
+                heading, entries = daemon_log()
+            except DaemonError as e:
+                heading, entries, failure = "", [], str(e)
+            else:
+                failure = None
             lines.append(Content.from_markup(
-                f"[$foreground 50%]$stamp[/] [{color}]$level[/] $msg",
-                stamp=stamp, level=f"{level:<5}", msg=msg,
-            ))
-        log = Content("\n").join(lines) if lines else Content.from_markup(
-            "[$foreground 50%]No events logged yet this session.[/]")
+                "[b $primary]daemon[/] [$foreground 50%]$h[/]", h=heading))
+            lines.append(_hint(log_path()))
+            records = _daemon_records(entries)
+            lines.extend(_log_line(*record) for record in records)
+            if failure:
+                lines.append(_hint(f"Could not read its log: {failure}"))
+            elif not records:
+                lines.append(_hint("Nothing logged yet."))
+        log = Content("\n").join(lines)
         result = _ask(lambda: DebugScreen(about, log))
         if result == "quit":
             return "quit"
