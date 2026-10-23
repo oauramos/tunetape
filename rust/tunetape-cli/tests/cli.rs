@@ -73,12 +73,31 @@ impl Mock {
         mock
     }
 
+    /// Like `start`, but always on loopback TCP + token, the Windows
+    /// transport (a POSIX daemon uses it under TUNETAPE_DAEMON_TRANSPORT=tcp).
+    fn start_tcp(script: impl Fn(&str, &Value) -> Reply + Send + Sync + 'static) -> Mock {
+        let mock = Mock::listen_on(true, script);
+        mock.write_discovery(&mock.dir.path().join("daemon.json"));
+        mock
+    }
+
     /// Start listening without writing daemon.json (for the spawn test).
     fn listen(script: impl Fn(&str, &Value) -> Reply + Send + Sync + 'static) -> Mock {
+        Mock::listen_on(!cfg!(unix), script)
+    }
+
+    fn listen_on(
+        tcp: bool,
+        script: impl Fn(&str, &Value) -> Reply + Send + Sync + 'static,
+    ) -> Mock {
         let dir = TempDir::new();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let script: Arc<Script> = Arc::new(script);
-        let discovery = serve(dir.path(), requests.clone(), script);
+        let discovery = if tcp {
+            serve_tcp(requests.clone(), script)
+        } else {
+            serve_unix(dir.path(), requests.clone(), script)
+        };
         Mock {
             dir,
             requests,
@@ -88,6 +107,10 @@ impl Mock {
 
     fn write_discovery(&self, path: &Path) {
         fs::write(path, self.discovery.to_string()).unwrap();
+    }
+
+    fn write_discovery_value(&self, disc: &Value) {
+        fs::write(self.dir.path().join("daemon.json"), disc.to_string()).unwrap();
     }
 
     fn data_dir(&self) -> &Path {
@@ -123,8 +146,13 @@ impl Mock {
 }
 
 fn run_in(data_dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
+    run_in_cwd(data_dir, data_dir, args, env)
+}
+
+fn run_in_cwd(data_dir: &Path, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(BIN);
-    cmd.args(args)
+    cmd.current_dir(cwd)
+        .args(args)
         .env("TUNETAPE_DATA_DIR", data_dir)
         // A spawn that should not happen fails loudly instead of starting a
         // real daemon.
@@ -150,6 +178,7 @@ fn handle(
     stream: impl std::io::Read + Write,
     requests: Arc<Mutex<Vec<Value>>>,
     script: Arc<Script>,
+    need_token: bool,
 ) {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -162,7 +191,7 @@ fn handle(
         let method = req["method"].as_str().unwrap_or("").to_string();
         let params = req.get("params").cloned().unwrap_or(json!({}));
         let reply = if method == "hello" {
-            let token_ok = cfg!(unix) || params["token"] == TOKEN;
+            let token_ok = !need_token || params["token"] == TOKEN;
             if !token_ok {
                 Reply::Err(1001, "Not authenticated")
             } else {
@@ -190,14 +219,14 @@ fn handle(
 }
 
 #[cfg(unix)]
-fn serve(dir: &Path, requests: Arc<Mutex<Vec<Value>>>, script: Arc<Script>) -> Value {
+fn serve_unix(dir: &Path, requests: Arc<Mutex<Vec<Value>>>, script: Arc<Script>) -> Value {
     use std::os::unix::net::UnixListener;
     let path = dir.join("daemon.sock");
     let listener = UnixListener::bind(&path).unwrap();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (r, s) = (requests.clone(), script.clone());
-            thread::spawn(move || handle(stream, r, s));
+            thread::spawn(move || handle(stream, r, s, false));
         }
     });
     json!({"protocol": 1, "version": "0.10.0-mock", "pid": std::process::id(),
@@ -205,14 +234,18 @@ fn serve(dir: &Path, requests: Arc<Mutex<Vec<Value>>>, script: Arc<Script>) -> V
 }
 
 #[cfg(not(unix))]
-fn serve(_dir: &Path, requests: Arc<Mutex<Vec<Value>>>, script: Arc<Script>) -> Value {
+fn serve_unix(_dir: &Path, _requests: Arc<Mutex<Vec<Value>>>, _script: Arc<Script>) -> Value {
+    unreachable!("no unix sockets on this platform")
+}
+
+fn serve_tcp(requests: Arc<Mutex<Vec<Value>>>, script: Arc<Script>) -> Value {
     use std::net::TcpListener;
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let (r, s) = (requests.clone(), script.clone());
-            thread::spawn(move || handle(stream, r, s));
+            thread::spawn(move || handle(stream, r, s, true));
         }
     });
     json!({"protocol": 1, "version": "0.10.0-mock", "pid": std::process::id(),
@@ -239,19 +272,34 @@ fn chrono_status(state: &str) -> Value {
     })
 }
 
-fn request(title: &str, items: usize) -> Value {
-    let ids: Vec<String> = (0..items).map(|i| format!("i-{i}")).collect();
-    json!({"request": {"id": "r-1", "input": "x", "kind": "search", "title": title,
+fn request(id: &str, kind: &str, title: Option<&str>, items: usize) -> Value {
+    let ids: Vec<String> = (0..items).map(|i| format!("{id}-i{i}")).collect();
+    json!({"request": {"id": id, "input": "x", "kind": kind, "title": title,
                        "status": "done", "error": null, "item_ids": ids,
                        "created_at": "2026-10-23T14:05:00Z"}})
 }
 
-/// A daemon that answers everything with a playing status.
+fn item(id: &str, title: &str, status: &str, error: Option<&str>) -> Value {
+    json!({"id": id, "request_id": "r", "title": title, "kind": "youtube", "input": "x",
+           "collection": null, "status": status, "error": error, "duration": null})
+}
+
+/// A daemon that answers everything with a playing status. `play` posts a
+/// single track (r-play) that is playing; `queue.add` an album (r-add).
 fn player() -> Mock {
     Mock::start(|method, _| match method {
         "hello" => hello(),
-        "play" => Reply::Ok(request("lofi hip hop radio", 1)),
-        "queue.add" => Reply::Ok(request("Chrono Trigger OST", 12)),
+        "play" => Reply::Ok(request("r-play", "search", None, 1)),
+        "queue.add" => Reply::Ok(request(
+            "r-add",
+            "khinsider",
+            Some("Chrono Trigger OST"),
+            12,
+        )),
+        "queue.list" => Reply::Ok(json!({"index": 0, "items": [
+            item("r-play-i0", "lofi hip hop radio", "playing", None),
+            item("r-add-i0", "Wind Scene", "queued", None),
+        ]})),
         "queue.clear" => Reply::Ok(json!({"items": [], "index": -1})),
         "daemon.shutdown" => Reply::Ok(json!({})),
         _ => Reply::Ok(chrono_status("playing")),
@@ -305,14 +353,98 @@ fn play_joins_words_and_waits() {
     let mock = player();
     let out = mock.run(&["play", "lofi", "hip", "hop"]);
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    // The request has no title yet; the item that started playing names it.
     assert_eq!(stdout(&out), "Playing: lofi hip hop radio\n");
     assert_eq!(
         mock.commands(),
-        [(
-            "play".to_string(),
-            json!({"input": "lofi hip hop", "wait": true})
-        )]
+        [
+            (
+                "play".to_string(),
+                json!({"input": "lofi hip hop", "wait": true})
+            ),
+            ("queue.list".to_string(), json!({})),
+        ]
     );
+}
+
+#[test]
+fn play_reports_a_track_that_fails_to_start() {
+    let mock = Mock::start(|method, _| match method {
+        "hello" => hello(),
+        "play" => Reply::Ok(request("r-dead", "youtube", None, 1)),
+        "queue.list" => Reply::Ok(json!({"index": 0, "items": [
+            item("r-dead-i0", "x", "failed", Some("This video is unavailable."))
+        ]})),
+        _ => Reply::Ok(json!({"state": "idle"})),
+    });
+    let out = mock.run(&["play", "https://youtu.be/dead"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(stdout(&out), "");
+    assert_eq!(
+        stderr(&out).trim(),
+        "tunetape-cli: Could not play x: This video is unavailable."
+    );
+}
+
+#[test]
+fn play_json_prints_the_result() {
+    let mock = player();
+    let out = mock.run(&["play", "--json", "lofi"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let printed: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(printed, request("r-play", "search", None, 1));
+}
+
+#[test]
+fn relative_paths_are_sent_absolute() {
+    let mock = player();
+    let cwd = TempDir::new();
+    fs::write(cwd.path().join("song.mp3"), b"x").unwrap();
+    let out = run_in_cwd(mock.data_dir(), cwd.path(), &["add", "song.mp3"], &[]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    let sent = mock.commands()[0].1["input"].as_str().unwrap().to_string();
+    assert!(Path::new(&sent).is_absolute(), "{sent}");
+    assert_eq!(
+        fs::canonicalize(&sent).unwrap(),
+        fs::canonicalize(cwd.path().join("song.mp3")).unwrap()
+    );
+    // Words that are not a file here go as they are.
+    run_in_cwd(
+        mock.data_dir(),
+        cwd.path(),
+        &["add", "not", "a", "file"],
+        &[],
+    );
+    assert_eq!(mock.commands()[2].1["input"], "not a file");
+}
+
+#[test]
+fn tcp_transport_presents_the_token() {
+    let mock = Mock::start_tcp(|method, _| match method {
+        "hello" => hello(),
+        _ => Reply::Ok(chrono_status("paused")),
+    });
+    let out = mock.run(&["status"]);
+    assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
+    assert!(stdout(&out).starts_with("⏸ Corridors of Time"));
+    let calls = mock.calls();
+    assert_eq!(calls[0].0, "hello");
+    assert_eq!(calls[0].1["token"], TOKEN);
+}
+
+#[test]
+fn tcp_wrong_token_is_unreachable() {
+    let mock = Mock::start_tcp(|method, _| match method {
+        "hello" => hello(),
+        _ => Reply::Ok(chrono_status("paused")),
+    });
+    let mut disc = mock.discovery.clone();
+    disc["token"] = json!("A".repeat(43));
+    mock.write_discovery_value(&disc);
+    // 1001 means a stale file: the CLI spawns (which fails here) -> exit 3.
+    let out = mock.run(&["status"]);
+    assert_eq!(out.status.code(), Some(3));
+    assert!(mock.commands().is_empty());
 }
 
 #[test]
@@ -328,12 +460,12 @@ fn add_next_with_title() {
     assert_eq!(out.status.code(), Some(0), "{}", stderr(&out));
     assert_eq!(stdout(&out), "Queued: Chrono Trigger OST (12 tracks)\n");
     assert_eq!(
-        mock.commands(),
-        [(
+        mock.commands()[0],
+        (
             "queue.add".to_string(),
             json!({"input": "https://downloads.khinsider.com/game-soundtracks/album/chrono-trigger",
                    "at": "next", "title": "Chrono", "wait": true})
-        )]
+        )
     );
 }
 
@@ -342,12 +474,24 @@ fn add_defaults_to_the_end() {
     let mock = player();
     assert!(mock.run(&["add", "/music/a.mp3"]).status.success());
     assert_eq!(
-        mock.commands(),
-        [(
+        mock.commands()[0],
+        (
             "queue.add".to_string(),
             json!({"input": "/music/a.mp3", "at": "end", "wait": true})
-        )]
+        )
     );
+}
+
+#[test]
+fn add_names_an_untitled_request_by_its_first_item() {
+    let mock = Mock::start(|method, _| match method {
+        "hello" => hello(),
+        "queue.add" => Reply::Ok(request("r-f", "file", None, 1)),
+        _ => Reply::Ok(json!({"index": 0, "items": [item("r-f-i0", "a", "queued", None)]})),
+    });
+    let out = mock.run(&["add", "/music/a.mp3"]);
+    assert_eq!(stdout(&out), "Queued: a\n");
+    assert_eq!(mock.commands()[1].0, "queue.list");
 }
 
 #[test]
@@ -464,7 +608,10 @@ fn daemon_error_goes_to_stderr_with_status_1() {
     let out = mock.run(&["next"]);
     assert_eq!(out.status.code(), Some(1));
     assert_eq!(stdout(&out), "");
-    assert_eq!(stderr(&out).trim(), "Already at the last track");
+    assert_eq!(
+        stderr(&out).trim(),
+        "tunetape-cli: Already at the last track"
+    );
 }
 
 #[test]
@@ -557,7 +704,7 @@ fn shutdown_calls_the_daemon() {
     let mock = player();
     let out = mock.run(&["shutdown"]);
     assert_eq!(out.status.code(), Some(0));
-    assert_eq!(stdout(&out), "tunetape daemon stopped\n");
+    assert_eq!(stdout(&out), "tunetape daemon stopped.\n");
     assert_eq!(
         mock.commands(),
         [("daemon.shutdown".to_string(), json!({}))]

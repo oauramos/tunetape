@@ -35,6 +35,8 @@ tunetape-cli seek <s | +s | -s | mm:ss>   a sign means relative, bare means abso
 tunetape-cli history [--limit N] [--json]
 tunetape-cli discover <words…> [--json]
 tunetape-cli shutdown                     stop the daemon (never starts one)
+
+--json on any command but shutdown prints the raw result
 ```
 
 ```console
@@ -44,9 +46,14 @@ $ tunetape-cli status
 ▶ Corridors of Time · Chrono Trigger OST (5/64)  1:23 / 4:11  vol 80%
 ```
 
-`status` shows `▶` playing, `⏸` paused, `…` loading and `■` idle. `--json`
-prints the method's raw result. Player commands print the resulting status
-line.
+`status` shows `▶` playing, `⏸` paused, `…` loading and `■` idle. Every
+command but `shutdown` takes `--json` to print the method's raw result
+(2-space indent, the daemon's key order). Player commands print the resulting
+status line. `play` waits (up to 45 s) for its first track to start, so a dead
+link is reported right away (`Could not play …`, exit 1), and prints
+`Loading: …` if it is still resolving. A relative path to a local file is sent
+as an absolute one. The output strings are the Python CLI's
+(docs/architecture.md, "Command line").
 
 Exit status: `0` ok, `1` the daemon returned an error (its message goes to
 stderr), `2` usage error, `3` the daemon could not be reached or started.
