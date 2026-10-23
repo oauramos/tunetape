@@ -1,0 +1,583 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/oauramos/tunetape/main/protocol/v1.schema.json",
+  "title": "tunetape daemon protocol, version 1",
+  "description": "Machine-readable form of docs/protocol.md (protocol 1). The prose document is authoritative; this schema must agree with it. Clients must ignore fields they do not know, so result and data objects allow additional properties. Pointers: #/$defs/envelope/<request|success|error|event>, #/$defs/methods/<method>/<params|result>, #/$defs/events/<type>/data, #/$defs/errors/<code>/data.",
+  "$ref": "#/$defs/message",
+  "$defs": {
+    "message": {
+      "description": "Any message on the wire: a client request, or a daemon response or event.",
+      "oneOf": [
+        { "$ref": "#/$defs/envelope/request" },
+        { "$ref": "#/$defs/serverMessage" }
+      ]
+    },
+    "serverMessage": {
+      "description": "Anything the daemon sends: a response to a request, or an event notification. The daemon never sends requests (§1.1).",
+      "oneOf": [
+        { "$ref": "#/$defs/envelope/success" },
+        { "$ref": "#/$defs/envelope/error" },
+        { "$ref": "#/$defs/envelope/event" }
+      ]
+    },
+    "id": {
+      "description": "Request id chosen by the client; responses echo it (§1.1).",
+      "type": ["integer", "string"]
+    },
+    "timestamp": {
+      "description": "ISO 8601 / RFC 3339 date-time, e.g. 2026-10-23T14:02:11Z.",
+      "type": "string",
+      "format": "date-time",
+      "minLength": 1
+    },
+    "envelope": {
+      "request": {
+        "description": "A JSON-RPC 2.0 request, client to daemon. No batches.",
+        "type": "object",
+        "required": ["jsonrpc", "id", "method"],
+        "properties": {
+          "jsonrpc": { "const": "2.0" },
+          "id": { "$ref": "#/$defs/id" },
+          "method": { "type": "string", "minLength": 1 },
+          "params": { "type": "object" }
+        }
+      },
+      "success": {
+        "description": "A successful response. `result` is described per method under #/$defs/methods/<method>/result.",
+        "type": "object",
+        "required": ["jsonrpc", "id", "result"],
+        "properties": {
+          "jsonrpc": { "const": "2.0" },
+          "id": { "$ref": "#/$defs/id" },
+          "result": {}
+        },
+        "not": { "anyOf": [{ "required": ["error"] }, { "required": ["method"] }] }
+      },
+      "error": {
+        "description": "An error response. `id` is null when the request could not be read (parse error, invalid request).",
+        "type": "object",
+        "required": ["jsonrpc", "id", "error"],
+        "properties": {
+          "jsonrpc": { "const": "2.0" },
+          "id": { "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }] },
+          "error": { "$ref": "#/$defs/errorObject" }
+        },
+        "not": { "anyOf": [{ "required": ["result"] }, { "required": ["method"] }] }
+      },
+      "event": {
+        "description": "An event notification (§4.4). Only sent after events.subscribe. Clients must ignore event types they do not know.",
+        "type": "object",
+        "required": ["jsonrpc", "method", "params"],
+        "properties": {
+          "jsonrpc": { "const": "2.0" },
+          "method": { "const": "event" },
+          "params": {
+            "type": "object",
+            "required": ["type", "data"],
+            "properties": {
+              "type": { "type": "string", "minLength": 1 },
+              "data": { "type": "object" }
+            },
+            "allOf": [
+              { "if": { "properties": { "type": { "const": "state" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/state/data" } } } },
+              { "if": { "properties": { "type": { "const": "track" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/track/data" } } } },
+              { "if": { "properties": { "type": { "const": "queue" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/queue/data" } } } },
+              { "if": { "properties": { "type": { "const": "request" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/request/data" } } } },
+              { "if": { "properties": { "type": { "const": "error" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/error/data" } } } },
+              { "if": { "properties": { "type": { "const": "shutdown" } } }, "then": { "properties": { "data": { "$ref": "#/$defs/events/shutdown/data" } } } }
+            ]
+          }
+        },
+        "not": { "anyOf": [{ "required": ["id"] }, { "required": ["result"] }, { "required": ["error"] }] }
+      }
+    },
+    "errorObject": {
+      "type": "object",
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "description": "See #/$defs/ErrorCode for the codes protocol 1 defines. New codes may be added compatibly, so clients accept any integer.",
+          "type": "integer"
+        },
+        "message": { "description": "User-facing English, safe to show as is.", "type": "string", "minLength": 1 },
+        "data": {}
+      },
+      "allOf": [
+        { "if": { "properties": { "code": { "const": 1002 } } }, "then": { "properties": { "data": { "$ref": "#/$defs/errors/1002/data" } }, "required": ["data"] } },
+        { "if": { "properties": { "code": { "const": 1014 } } }, "then": { "properties": { "data": { "$ref": "#/$defs/errors/1014/data" } }, "required": ["data"] } }
+      ]
+    },
+    "ErrorCode": {
+      "description": "Error codes defined by protocol 1 (§5).",
+      "oneOf": [
+        { "const": -32700, "description": "Parse error; the daemon closes the connection." },
+        { "const": -32600, "description": "Invalid request." },
+        { "const": -32601, "description": "Method not found." },
+        { "const": -32602, "description": "Invalid params." },
+        { "const": -32603, "description": "Internal error." },
+        { "const": 1001, "description": "Not authenticated: hello missing, or bad token." },
+        { "const": 1002, "description": "Unsupported protocol version." },
+        { "const": 1010, "description": "Unrecognized or unsupported input." },
+        { "const": 1011, "description": "Missing dependency (mpv, yt-dlp); message carries the install hint." },
+        { "const": 1012, "description": "Nothing is playing." },
+        { "const": 1013, "description": "Not found / out of range (index, item id, request id)." },
+        { "const": 1014, "description": "Request failed; data is {request: Request}." },
+        { "const": 1020, "description": "AI discovery is not configured." },
+        { "const": 1021, "description": "AI discovery failed." }
+      ]
+    },
+    "errors": {
+      "1002": {
+        "data": {
+          "type": "object",
+          "required": ["supported"],
+          "properties": {
+            "supported": { "type": "array", "items": { "type": "integer" }, "minItems": 1 }
+          }
+        }
+      },
+      "1014": {
+        "data": {
+          "type": "object",
+          "required": ["request"],
+          "properties": { "request": { "$ref": "#/$defs/Request" } }
+        }
+      }
+    },
+
+    "Discovery": {
+      "description": "<data_dir>/daemon.json (§1.2). Written atomically once the daemon listens; mode 0600 on POSIX.",
+      "type": "object",
+      "required": ["protocol", "version", "pid", "transport", "started_at"],
+      "properties": {
+        "protocol": { "type": "integer", "minimum": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "pid": { "type": "integer", "minimum": 1 },
+        "transport": { "enum": ["unix", "tcp"] },
+        "started_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "oneOf": [
+        { "$ref": "#/$defs/DiscoveryUnix" },
+        { "$ref": "#/$defs/DiscoveryTcp" }
+      ]
+    },
+    "DiscoveryUnix": {
+      "description": "POSIX: a Unix domain socket. Clients take `path` from here and never compute it.",
+      "type": "object",
+      "required": ["transport", "path"],
+      "properties": {
+        "transport": { "const": "unix" },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "DiscoveryTcp": {
+      "description": "Windows: TCP on loopback with a 32-byte url-safe base64 token (no padding, 43 chars).",
+      "type": "object",
+      "required": ["transport", "host", "port", "token"],
+      "properties": {
+        "transport": { "const": "tcp" },
+        "host": { "const": "127.0.0.1" },
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "token": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+      }
+    },
+
+    "InputKind": {
+      "description": "How the daemon classified an input (§3.1).",
+      "enum": ["search", "spotify", "youtube_playlist", "youtube", "khinsider", "file", "direct", "generic"]
+    },
+    "Request": {
+      "description": "One posted input (§3.2).",
+      "type": "object",
+      "required": ["id", "input", "kind", "title", "status", "error", "item_ids", "created_at"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "input": { "type": "string" },
+        "kind": { "$ref": "#/$defs/InputKind" },
+        "title": { "type": ["string", "null"] },
+        "status": { "enum": ["pending", "expanding", "done", "failed"] },
+        "error": { "type": ["string", "null"] },
+        "item_ids": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "allOf": [
+        { "if": { "properties": { "status": { "const": "failed" } } }, "then": { "properties": { "error": { "type": "string", "minLength": 1 } } } }
+      ]
+    },
+    "Collection": {
+      "description": "Where an item sits in its collection; null on single-track requests.",
+      "type": "object",
+      "required": ["title", "index", "count"],
+      "properties": {
+        "title": { "type": ["string", "null"] },
+        "index": { "type": "integer", "minimum": 0 },
+        "count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "Item": {
+      "description": "One playable track in the queue (§3.3).",
+      "type": "object",
+      "required": ["id", "request_id", "title", "kind", "input", "collection", "status", "error", "duration"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "request_id": { "type": "string", "minLength": 1 },
+        "title": { "type": ["string", "null"] },
+        "kind": { "$ref": "#/$defs/InputKind" },
+        "input": { "type": "string" },
+        "collection": { "oneOf": [{ "$ref": "#/$defs/Collection" }, { "type": "null" }] },
+        "status": { "enum": ["queued", "resolving", "playing", "played", "failed"] },
+        "error": { "type": ["string", "null"] },
+        "duration": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "QueueSnapshot": {
+      "description": "The queue and the index of the current item (-1 when there is none).",
+      "type": "object",
+      "required": ["items", "index"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/Item" } },
+        "index": { "type": "integer", "minimum": -1 }
+      }
+    },
+    "Levels": {
+      "description": "[[rms_dbfs, peak_dbfs], ...] per channel, or null. Silence is -200.0 on the wire, never -Infinity.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "number" }],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "Stats": {
+      "description": "MPVController.get_stats(): any field may be null.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "codec": { "type": ["string", "null"] },
+            "bitrate": { "type": ["number", "null"] },
+            "samplerate": { "type": ["number", "null"] },
+            "channels": { "type": ["integer", "string", "null"] },
+            "container": { "type": ["string", "null"] },
+            "ahead": { "type": ["number", "null"] },
+            "cached": { "type": ["number", "null"] },
+            "speed": { "type": ["number", "null"] },
+            "normalized": { "type": ["boolean", "null"] }
+          }
+        },
+        { "type": "null" }
+      ]
+    },
+    "Status": {
+      "description": "Player status (§3.4).",
+      "type": "object",
+      "required": ["state", "message", "position", "duration", "volume", "muted", "current", "index", "length", "has_next", "has_prev"],
+      "properties": {
+        "state": { "enum": ["idle", "loading", "playing", "paused"] },
+        "message": { "type": ["string", "null"] },
+        "position": { "type": "number", "minimum": 0 },
+        "duration": { "description": "Seconds; 0 when unknown (live).", "type": "number", "minimum": 0 },
+        "volume": { "type": "number", "minimum": 0, "maximum": 130 },
+        "muted": { "type": "boolean" },
+        "current": { "oneOf": [{ "$ref": "#/$defs/Item" }, { "type": "null" }] },
+        "index": { "type": "integer", "minimum": -1 },
+        "length": { "type": "integer", "minimum": 0 },
+        "has_next": { "type": "boolean" },
+        "has_prev": { "type": "boolean" },
+        "levels": { "$ref": "#/$defs/Levels" },
+        "stats": { "$ref": "#/$defs/Stats" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "length": { "const": 0 } } },
+          "then": { "properties": { "current": { "type": "null" }, "index": { "const": -1 }, "has_next": { "const": false }, "has_prev": { "const": false } } }
+        }
+      ]
+    },
+    "HistoryType": {
+      "description": "history.json entry types: the existing ones plus direct/file/generic for the new input kinds (§6).",
+      "enum": ["youtube", "youtube_playlist", "spotify", "khinsider", "ai", "ai_search", "direct", "file", "generic"]
+    },
+    "HistoryEntry": {
+      "description": "An entry of history.json as stored (§4.3). Collections carry track_count and last_index.",
+      "type": "object",
+      "required": ["type", "url", "title", "last_played", "play_count"],
+      "properties": {
+        "type": { "$ref": "#/$defs/HistoryType" },
+        "url": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "last_played": { "$ref": "#/$defs/timestamp" },
+        "play_count": { "type": "integer", "minimum": 1 },
+        "track_count": { "type": ["integer", "null"], "minimum": 0 },
+        "last_index": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "AddParams": {
+      "description": "Params shared by queue.add and play (§4.1). Unknown params are ignored.",
+      "type": "object",
+      "required": ["input"],
+      "properties": {
+        "input": { "type": "string", "minLength": 1 },
+        "title": { "type": ["string", "null"] },
+        "start_index": { "type": "integer", "minimum": 0, "default": 0 },
+        "wait": { "type": "boolean", "default": false }
+      }
+    },
+    "RequestResult": {
+      "type": "object",
+      "required": ["request"],
+      "properties": { "request": { "$ref": "#/$defs/Request" } }
+    },
+    "NoParams": {
+      "description": "The method takes no params; params is omitted or {} (unknown params are ignored).",
+      "type": "object"
+    },
+
+    "methods": {
+      "hello": {
+        "params": {
+          "type": "object",
+          "required": ["protocol", "client"],
+          "properties": {
+            "protocol": { "type": "integer", "minimum": 1 },
+            "client": { "type": "string" },
+            "token": { "description": "Required on the tcp transport, ignored on unix.", "type": "string" }
+          }
+        },
+        "result": {
+          "type": "object",
+          "required": ["protocol", "server", "pid"],
+          "properties": {
+            "protocol": { "type": "integer", "minimum": 1 },
+            "server": { "type": "string", "minLength": 1 },
+            "pid": { "type": "integer", "minimum": 1 }
+          }
+        }
+      },
+      "queue.add": {
+        "params": {
+          "allOf": [{ "$ref": "#/$defs/AddParams" }],
+          "properties": { "at": { "enum": ["end", "next", "now"], "default": "end" } }
+        },
+        "result": { "$ref": "#/$defs/RequestResult" }
+      },
+      "play": {
+        "params": { "$ref": "#/$defs/AddParams" },
+        "result": { "$ref": "#/$defs/RequestResult" }
+      },
+      "queue.list": {
+        "params": { "$ref": "#/$defs/NoParams" },
+        "result": { "$ref": "#/$defs/QueueSnapshot" }
+      },
+      "queue.jump": {
+        "params": {
+          "type": "object",
+          "required": ["index"],
+          "properties": { "index": { "type": "integer" } }
+        },
+        "result": { "$ref": "#/$defs/Status" }
+      },
+      "queue.remove": {
+        "params": {
+          "type": "object",
+          "required": ["id"],
+          "properties": { "id": { "type": "string", "minLength": 1 } }
+        },
+        "result": { "$ref": "#/$defs/QueueSnapshot" }
+      },
+      "queue.clear": {
+        "params": { "$ref": "#/$defs/NoParams" },
+        "result": {
+          "type": "object",
+          "required": ["items", "index"],
+          "properties": {
+            "items": { "type": "array", "maxItems": 0 },
+            "index": { "const": -1 }
+          }
+        }
+      },
+      "requests.list": {
+        "params": { "$ref": "#/$defs/NoParams" },
+        "result": {
+          "type": "object",
+          "required": ["requests"],
+          "properties": {
+            "requests": { "description": "Most recent first, at most the last 100.", "type": "array", "items": { "$ref": "#/$defs/Request" }, "maxItems": 100 }
+          }
+        }
+      },
+      "requests.get": {
+        "params": {
+          "type": "object",
+          "required": ["id"],
+          "properties": { "id": { "type": "string", "minLength": 1 } }
+        },
+        "result": { "$ref": "#/$defs/RequestResult" }
+      },
+      "player.status": {
+        "params": {
+          "type": "object",
+          "properties": {
+            "levels": { "type": "boolean", "default": false },
+            "stats": { "type": "boolean", "default": false }
+          }
+        },
+        "result": { "$ref": "#/$defs/Status" }
+      },
+      "player.pause": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.resume": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.toggle": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.next": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.prev": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.stop": { "params": { "$ref": "#/$defs/NoParams" }, "result": { "$ref": "#/$defs/Status" } },
+      "player.seek": {
+        "params": {
+          "type": "object",
+          "required": ["seconds"],
+          "properties": {
+            "seconds": { "type": "number" },
+            "relative": { "type": "boolean", "default": true }
+          }
+        },
+        "result": { "$ref": "#/$defs/Status" }
+      },
+      "player.volume": {
+        "params": {
+          "description": "Exactly one of value (absolute percent) or delta. Clamped to 0-130 and persisted.",
+          "type": "object",
+          "properties": {
+            "value": { "type": "number" },
+            "delta": { "type": "number" }
+          },
+          "oneOf": [
+            { "required": ["value"], "not": { "required": ["delta"] } },
+            { "required": ["delta"], "not": { "required": ["value"] } }
+          ]
+        },
+        "result": { "$ref": "#/$defs/Status" }
+      },
+      "player.mute": {
+        "params": {
+          "type": "object",
+          "properties": { "muted": { "description": "Omit to toggle.", "type": "boolean" } }
+        },
+        "result": { "$ref": "#/$defs/Status" }
+      },
+      "ai.discover": {
+        "params": {
+          "type": "object",
+          "required": ["request"],
+          "properties": { "request": { "type": "string", "minLength": 1 } }
+        },
+        "result": {
+          "type": "object",
+          "required": ["tracks"],
+          "properties": {
+            "tracks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["title", "input"],
+                "properties": {
+                  "title": { "type": "string" },
+                  "input": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
+        }
+      },
+      "history.list": {
+        "params": {
+          "type": "object",
+          "properties": { "limit": { "type": "integer", "minimum": 0, "default": 50 } }
+        },
+        "result": {
+          "type": "object",
+          "required": ["entries"],
+          "properties": { "entries": { "type": "array", "items": { "$ref": "#/$defs/HistoryEntry" } } }
+        }
+      },
+      "events.subscribe": {
+        "params": {
+          "type": "object",
+          "properties": { "types": { "description": "Omit to subscribe to all.", "type": "array", "items": { "type": "string" } } }
+        },
+        "result": {
+          "type": "object",
+          "required": ["subscribed"],
+          "properties": { "subscribed": { "type": "array", "items": { "type": "string" } } }
+        }
+      },
+      "daemon.info": {
+        "params": { "$ref": "#/$defs/NoParams" },
+        "result": {
+          "type": "object",
+          "required": ["protocol", "version", "pid", "started_at", "clients", "data_dir"],
+          "properties": {
+            "protocol": { "type": "integer", "minimum": 1 },
+            "version": { "type": "string", "minLength": 1 },
+            "pid": { "type": "integer", "minimum": 1 },
+            "started_at": { "$ref": "#/$defs/timestamp" },
+            "clients": { "type": "integer", "minimum": 0 },
+            "data_dir": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "daemon.log": {
+        "params": {
+          "type": "object",
+          "properties": { "limit": { "type": "integer", "minimum": 0, "default": 200 } }
+        },
+        "result": {
+          "type": "object",
+          "required": ["entries"],
+          "properties": {
+            "entries": {
+              "description": "Oldest first.",
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["time", "level", "message"],
+                "properties": {
+                  "time": { "$ref": "#/$defs/timestamp" },
+                  "level": { "type": "string" },
+                  "message": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      },
+      "daemon.shutdown": {
+        "params": { "$ref": "#/$defs/NoParams" },
+        "result": { "type": "object" }
+      }
+    },
+
+    "events": {
+      "state": { "data": { "description": "state, volume, muted or message changed.", "$ref": "#/$defs/Status" } },
+      "track": { "data": { "description": "The current item changed.", "$ref": "#/$defs/Status" } },
+      "queue": { "data": { "description": "Items added, removed, reordered or changed status.", "$ref": "#/$defs/QueueSnapshot" } },
+      "request": { "data": { "description": "A request changed status.", "$ref": "#/$defs/RequestResult" } },
+      "error": {
+        "data": {
+          "description": "A playback failure the user should see.",
+          "type": "object",
+          "required": ["message", "item_id"],
+          "properties": {
+            "message": { "type": "string", "minLength": 1 },
+            "item_id": { "type": ["string", "null"] }
+          }
+        }
+      },
+      "shutdown": { "data": { "description": "The daemon is about to exit.", "type": "object" } }
+    }
+  }
+}
