@@ -706,14 +706,19 @@ def serve(server, stdin, stdout):
     """
     write_lock = threading.Lock()
     workers = []
+    gone = threading.Event()
 
     def send(response):
-        if response is None:
+        if response is None or gone.is_set():
             return
         data = json.dumps(response, ensure_ascii=False, separators=(",", ":"))
         with write_lock:
-            stdout.write(data.encode("utf-8") + b"\n")
-            stdout.flush()
+            try:
+                stdout.write(data.encode("utf-8") + b"\n")
+                stdout.flush()
+            except (BrokenPipeError, ValueError):
+                # The client hung up; nobody is left to read the answer.
+                gone.set()
 
     def run(message):
         try:
@@ -743,6 +748,7 @@ def serve(server, stdin, stdout):
     # by its daemon timeout.
     for worker in workers:
         worker.join()
+    return not gone.is_set()
 
 
 def main(argv=None, *, stdin=None, stdout=None, client_factory=None) -> int:
@@ -764,7 +770,10 @@ def main(argv=None, *, stdin=None, stdout=None, client_factory=None) -> int:
         sys.stdout = sys.stderr
     server = Server(client_factory)
     try:
-        serve(server, in_stream, out_stream)
+        if not serve(server, in_stream, out_stream) and real_stdio:
+            # Point fd 1 at devnull, or the interpreter's own flush of the dead
+            # pipe at exit prints a BrokenPipeError of its own.
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.__stdout__.fileno())
     except KeyboardInterrupt:
         pass
     finally:
