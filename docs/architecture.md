@@ -78,3 +78,52 @@ A dropped connection makes pending and later calls raise `DaemonUnavailable`.
 Constraints that apply everywhere: Python ≥ 3.9 (no `match`, no `X | Y`
 annotations evaluated at runtime), standard library only for the daemon, the
 client and the MCP server, and macOS, Linux and Windows all supported.
+
+## Command line
+
+The Python CLI (`tunetape …`) and the Rust `tunetape-cli …` expose the same
+subcommands, so either can be used interchangeably. Both start the daemon on
+demand (protocol §1.3).
+
+```
+tunetape                              the TUI
+tunetape play <input…> [--title T]    replace the queue and play (words are joined with spaces)
+tunetape add <input…> [--next] [--title T]
+tunetape pause | resume | toggle | next | prev | stop | mute | clear
+tunetape status [--json]
+tunetape queue [--json]
+tunetape jump <n>                     1-based for humans; sends index n-1
+tunetape volume [<n> | +<n> | -<n>]   no argument prints the volume
+tunetape seek <s | +s | -s | mm:ss>   a sign means relative, bare means absolute
+tunetape history [--limit N] [--json]
+tunetape discover <words…> [--json]
+tunetape shutdown                     stop the daemon
+tunetape daemon [--idle-timeout S]    run the daemon in the foreground
+tunetape mcp                          MCP server on stdio (Python CLI only)
+```
+
+`play` and `add` post with `wait: true` and print what was queued
+(`Playing: <title>` / `Queued: <title> (12 tracks)`), so a bad link is reported
+right away. `status` prints one line, e.g.
+`▶ Corridors of Time · Chrono Trigger OST (5/64)  1:23 / 4:11  vol 80%`
+(`⏸` paused, `…` loading, `■` idle). `--json` prints the method's raw result.
+
+Exit status: `0` ok, `1` the daemon returned an error (its message goes to
+stderr), `2` usage error, `3` the daemon could not be reached or started.
+
+## Test seams
+
+- `TUNETAPE_DATA_DIR` isolates a daemon and its clients (protocol §1.2).
+- `TUNETAPE_MPV` / `TUNETAPE_YTDLP`: a command line used instead of the `mpv` /
+  `yt-dlp` executables, split with `shlex.split` (`posix=False` on Windows),
+  e.g. `TUNETAPE_MPV="/usr/bin/python3 tests/fakes/fake_mpv.py"`.
+- `tests/fakes/fake_mpv.py` is a stand-in for mpv that needs no audio device:
+  it accepts mpv's command line, serves mpv's JSON IPC on the
+  `--input-ipc-server` endpoint (`get_property`/`set_property`/`cycle`/`seek`/
+  `quit` for `time-pos`, `duration`, `pause`, `volume`, `mute`,
+  `af-metadata/…`, `audio-params`, …), "plays" for `FAKE_MPV_DURATION` seconds
+  (default `2`) and then exits 0. A media argument containing `fake-fail` exits
+  with status 2 before opening the IPC endpoint.
+
+With those, the engine, the daemon, the CLIs and the conformance suite run
+against local `file` inputs with no network, no yt-dlp and no audio device.
