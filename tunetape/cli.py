@@ -376,10 +376,15 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def _reconfigure_output() -> None:
     # The status icons (▶ ⏸ ■) don't exist in every console code page; a
-    # missing glyph must not turn into a traceback.
+    # missing glyph must not turn into a traceback. Piped output on Windows
+    # would otherwise be the ANSI code page, which has none of them, so it is
+    # UTF-8 there, as tunetape-cli writes it (a real console takes Unicode).
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(errors="replace")
+            if sys.platform == "win32" and not stream.isatty():
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            else:
+                stream.reconfigure(errors="replace")
         except (AttributeError, ValueError):
             pass
 

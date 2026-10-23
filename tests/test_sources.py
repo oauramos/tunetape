@@ -153,8 +153,10 @@ def test_yt_dlp_kinds_use_the_override(data_dir):
 def test_tool_command_override(monkeypatch):
     monkeypatch.setenv("TUNETAPE_MPV", "/usr/bin/python3 'tests/fakes/fake mpv.py' --x")
     if sys.platform == "win32":
-        monkeypatch.setenv("TUNETAPE_MPV", '"C:\\Program Files\\Python\\python.exe" fake.py')
-        assert player.tool_command("mpv") == ["C:\\Program Files\\Python\\python.exe", "fake.py"]
+        # A real interpreter: an override whose program is missing counts as
+        # no mpv at all. The quotes keep a path with spaces in one piece.
+        monkeypatch.setenv("TUNETAPE_MPV", f'"{sys.executable}" "fake mpv.py" --x')
+        assert player.tool_command("mpv") == [sys.executable, "fake mpv.py", "--x"]
     else:
         assert player.tool_command("mpv") == ["/usr/bin/python3", "tests/fakes/fake mpv.py", "--x"]
 

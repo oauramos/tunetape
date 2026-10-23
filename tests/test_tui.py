@@ -470,7 +470,9 @@ def test_the_daemon_moving_on_updates_the_screen_in_place():
         seen["subtitle"] = text(app, "#subtitle")
         seen["highlighted"] = screen.query_one("#queue").highlighted
 
-    client = FakeClient(["One", "Two", "Three"], album="Tape", durations=[0.4, 30, 30])
+    # Long enough that a slow CI runner still catches the first track on
+    # screen before the fake daemon moves on.
+    client = FakeClient(["One", "Two", "Three"], album="Tape", durations=[2.5, 30, 30])
     result, _ = drive(player(client), script)
     assert result is NOTHING
     assert seen == {"first": "One", "same screen": True, "subtitle": "Tape · track 2/3",

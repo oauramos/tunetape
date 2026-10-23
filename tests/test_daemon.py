@@ -84,10 +84,14 @@ def tcp_daemon(data_dir, monkeypatch):
     d.stop()
 
 
+_OWN_TOKEN = object()  # Raw.hello's default: the endpoint's own token
+
+
 class Raw:
     """A bare protocol connection, for what the Client never sends."""
 
     def __init__(self, info):
+        self.token = info.get("token")  # tcp only; the unix socket ignores it
         self.sock = open_endpoint(info, 5)
         self.sock.settimeout(5)
         self.buf = b""
@@ -109,7 +113,9 @@ class Raw:
         self.send({"jsonrpc": "2.0", "id": id, "method": method, "params": params or {}})
         return self.recv()
 
-    def hello(self, token=None, protocol=1):
+    def hello(self, token=_OWN_TOKEN, protocol=1):
+        if token is _OWN_TOKEN:
+            token = self.token
         return self.call("hello", {"protocol": protocol, "client": "test", "token": token}, id=0)
 
     def close(self):
@@ -196,7 +202,7 @@ def test_tcp_token(tcp_daemon):
     assert raw.recv() is None
     raw.close()
     raw = Raw(info)
-    assert raw.hello()["error"]["code"] == 1001  # missing token
+    assert raw.hello(token=None)["error"]["code"] == 1001  # missing token
     raw.close()
     with Client.connect(spawn=False) as c:  # reads the token from the file
         assert c.status()["state"] == "idle"
