@@ -511,9 +511,16 @@ def _session():
 
 
 def main():
-    if "--version" in sys.argv[1:] or "-V" in sys.argv[1:]:
+    argv = sys.argv[1:]
+    if "--version" in argv or "-V" in argv:
         print(f"tunetape {__version__}")
         return
+
+    if argv:
+        # Any argument means a command (`tunetape play …`, `tunetape daemon`);
+        # only a bare `tunetape` opens the interactive player below.
+        from tunetape import cli
+        sys.exit(cli.main(argv))
 
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("tunetape requires an interactive terminal.", file=sys.stderr)
