@@ -38,6 +38,9 @@ class DaemonError(Exception):
 class DaemonUnavailable(DaemonError):  # code 0: could not reach or start the daemon
     ...
 
+class DaemonTimeout(DaemonError):      # code -1: no answer within the call's timeout
+    ...
+
 class Client:
     @classmethod
     def connect(cls, *, spawn: bool = True, timeout: float = 10.0,
@@ -74,6 +77,10 @@ class Client:
 `call` is safe from several threads at once: one reader thread routes
 responses by `id` and hands `event` notifications to the subscriber callback.
 A dropped connection makes pending and later calls raise `DaemonUnavailable`.
+A call that gets no answer within `timeout` seconds raises `DaemonTimeout`
+(code `-1`); the connection stays usable. Every wrapper also takes an optional
+`timeout=` keyword, passed to `call` (`None` means the method's default: 30 s,
+longer for `wait=True` and `discover`).
 
 Constraints that apply everywhere: Python ≥ 3.9 (no `match`, no `X | Y`
 annotations evaluated at runtime), standard library only for the daemon, the
@@ -106,24 +113,48 @@ tunetape mcp                          MCP server on stdio (Python CLI only)
 (`Playing: <title>` / `Queued: <title> (12 tracks)`), so a bad link is reported
 right away. `status` prints one line, e.g.
 `▶ Corridors of Time · Chrono Trigger OST (5/64)  1:23 / 4:11  vol 80%`
-(`⏸` paused, `…` loading, `■` idle). `--json` prints the method's raw result.
+(`⏸` paused, `…` loading, `■` idle). `--json` prints the method's raw result,
+pretty-printed with a 2-space indent in the daemon's key order.
+
+The other commands print, so both CLIs match:
+
+- player commands (`pause`, `next`, `seek`, …): the status line; `clear`: `Queue cleared`
+- `volume`: `Volume 80%`, plus ` (muted)` when muted
+- `queue`: `▶ 1. Title  4:11` for the current item, two spaces instead of `▶`
+  for the others (the duration only once known)
+- `history`: `1. Title  [khinsider, 5/64]` (`[youtube]` for a single track)
+- `discover`: `1. Title  (input)`
+- `shutdown` never starts a daemon; with none running it prints
+  `tunetape daemon is not running` and exits `0`
 
 Exit status: `0` ok, `1` the daemon returned an error (its message goes to
-stderr), `2` usage error, `3` the daemon could not be reached or started.
+stderr), `2` usage error, `3` the daemon could not be reached or started (a
+daemon answering `hello` with `1002` counts as unreachable; no new one is
+started).
 
 ## Test seams
 
 - `TUNETAPE_DATA_DIR` isolates a daemon and its clients (protocol §1.2).
 - `TUNETAPE_MPV` / `TUNETAPE_YTDLP`: a command line used instead of the `mpv` /
   `yt-dlp` executables, split with `shlex.split` (`posix=False` on Windows),
-  e.g. `TUNETAPE_MPV="/usr/bin/python3 tests/fakes/fake_mpv.py"`.
+  e.g. `TUNETAPE_MPV="/usr/bin/python3 tests/fakes/fake_mpv.py"`. An override
+  whose program (its first word, looked up on `PATH` or as a path) does not
+  exist counts as missing (`1011`), never as the real tool, so a test can
+  simulate an uninstalled yt-dlp.
 - `tests/fakes/fake_mpv.py` is a stand-in for mpv that needs no audio device:
   it accepts mpv's command line, serves mpv's JSON IPC on the
   `--input-ipc-server` endpoint (`get_property`/`set_property`/`cycle`/`seek`/
   `quit` for `time-pos`, `duration`, `pause`, `volume`, `mute`,
   `af-metadata/…`, `audio-params`, …), "plays" for `FAKE_MPV_DURATION` seconds
   (default `2`) and then exits 0. A media argument containing `fake-fail` exits
-  with status 2 before opening the IPC endpoint.
+  with status 2 before opening the IPC endpoint; one containing
+  `fake-dur-<seconds>` plays that long instead; `FAKE_MPV_LOG=<file>` appends
+  each launch's argv as a JSON line.
+- `tests/fakes/fake_ytdlp.py` answers `--get-url --get-title` and
+  `--flat-playlist` without the network (input containing `fake-unavailable`
+  fails), for `TUNETAPE_YTDLP`.
+- `TUNETAPE_DAEMON_TRANSPORT=tcp` makes a POSIX daemon use the Windows
+  transport (loopback TCP + token), so that path is tested everywhere.
 
 With those, the engine, the daemon, the CLIs and the conformance suite run
 against local `file` inputs with no network, no yt-dlp and no audio device.

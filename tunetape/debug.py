@@ -10,11 +10,32 @@ from datetime import datetime, timezone
 
 _MAX = 500
 _records = deque(maxlen=_MAX)
+# Extra destinations for each record; the daemon adds its log file here so a
+# background process with no Debug screen still leaves a trail on disk.
+_sinks = []
 
 
 def log(message: str, level: str = "INFO") -> None:
     """Append a record (timestamp, level, message) to the in-memory log."""
-    _records.append((datetime.now(timezone.utc), str(level).upper(), str(message)))
+    record = (datetime.now(timezone.utc), str(level).upper(), str(message))
+    _records.append(record)
+    for sink in list(_sinks):
+        try:
+            sink(record)
+        except Exception:
+            pass  # a broken sink must never break the caller
+
+
+def add_sink(fn) -> None:
+    """Also hand every new record to ``fn(record)``."""
+    _sinks.append(fn)
+
+
+def remove_sink(fn) -> None:
+    try:
+        _sinks.remove(fn)
+    except ValueError:
+        pass
 
 
 def exception(prefix: str, exc: BaseException) -> None:

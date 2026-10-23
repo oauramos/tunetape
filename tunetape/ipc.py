@@ -37,7 +37,8 @@ class MpvIpc:
     def reset(self):
         """Clear any stale endpoint before a (re)spawn. Default: no-op."""
 
-    def connect(self, timeout: float) -> bool:  # pragma: no cover - interface
+    def connect(self, timeout: float, alive=None) -> bool:  # pragma: no cover - interface
+        """Wait up to ``timeout`` for the endpoint; give up early once ``alive()`` is False."""
         raise NotImplementedError
 
     def send(self, data: bytes) -> None:  # pragma: no cover - interface
@@ -71,9 +72,11 @@ class _UnixSocketIpc(MpvIpc):
         except OSError:
             pass
 
-    def connect(self, timeout: float) -> bool:
+    def connect(self, timeout: float, alive=None) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if alive is not None and not alive():
+                return False
             if os.path.exists(self._sock_path):
                 sock = None
                 try:
@@ -127,7 +130,7 @@ class _NamedPipeIpc(MpvIpc):
         self._read_timeout = 2.0
         self.server_address = self._pipe_name
 
-    def connect(self, timeout: float) -> bool:
+    def connect(self, timeout: float, alive=None) -> bool:
         import pywintypes
         import win32file
         import win32pipe
@@ -135,6 +138,8 @@ class _NamedPipeIpc(MpvIpc):
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            if alive is not None and not alive():
+                return False
             try:
                 handle = win32file.CreateFile(
                     self._pipe_name,

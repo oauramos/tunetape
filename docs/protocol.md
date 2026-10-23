@@ -81,9 +81,10 @@ Transports:
 
 - **POSIX (`unix`)**: a Unix domain socket. The daemon uses
   `<data_dir>/daemon.sock` when that path is shorter than 100 bytes, otherwise
-  `<tmpdir>/tunetape-<uid>/daemon.sock` (directory mode `0700`). The socket file
-  is `0600`. Clients always take the path from the discovery file and never
-  compute it.
+  `<tmpdir>/tunetape-<uid>/<hash>.sock` (directory mode `0700`; `<hash>` is
+  the first 12 hex digits of the SHA-256 of the data dir path, so isolated
+  instances never share a socket). The socket file is `0600`. Clients always
+  take the path from the discovery file and never compute it.
 - **Windows (`tcp`)**: TCP on `127.0.0.1`, an OS-assigned port, and a random
   32-byte token (url-safe base64, no padding) that the client must present in
   `hello`. The daemon never binds anything other than the loopback address.
@@ -108,6 +109,10 @@ instance (§1.4), and the loser exits on its own.
 - **Single instance.** On start the daemon reads an existing discovery file and
   sends it `hello`; if a live daemon answers, the new one prints a message and
   exits with status 0. Otherwise it removes the stale socket/file and listens.
+  So that two daemons starting at the same moment can't both listen, a daemon
+  holds an exclusive OS lock (`flock` / `msvcrt.locking`) on
+  `<data_dir>/daemon.lock` for its whole life and only touches the socket and
+  discovery file while holding it.
 - **Idle exit.** When the player is `idle` and no client is connected for
   `--idle-timeout` seconds, the daemon exits cleanly.
 - **Clean exit** (`daemon.shutdown`, `SIGTERM`, `SIGINT`, idle exit) stops mpv,
@@ -151,15 +156,20 @@ it in this order (first match wins):
 | 3 | YouTube playlist URL | `youtube_playlist` |
 | 4 | YouTube video URL | `youtube` |
 | 5 | KHInsider album URL | `khinsider` |
-| 6 | absolute path, `~/…` path or `file://` URL to an existing local file | `file` |
+| 6 | a path to an existing local file: it starts with `/`, `~/`, `./`, `../` or `file://`, or on Windows `X:\` or `\\`. A path that names no file fails with `1010` (`No such file: …`) | `file` |
 | 7 | `http(s)` URL whose path ends in an audio extension (`.mp3 .m4a .aac .flac .ogg .oga .opus .wav .webm .mka .wma .aiff`) | `direct` |
 | 8 | any other `http(s)` URL — handed to yt-dlp's generic extractors | `generic` |
 | 9 | anything else that is not a URL — plain words | `search` (`ytsearch1:<input>`) |
 
 Any other URL scheme (`ftp:`, `av:`, `lavfi:`, `memory:`, …) fails with `1010`.
+An input is a URL with a scheme when it contains no whitespace and matches
+`^[A-Za-z][A-Za-z0-9+.-]+:` (at least two scheme characters, so a Windows drive
+`C:\` is a path, not a scheme). Schemes other than `http`, `https`, `file` and
+`spotify` fail with `1010`; input with whitespace, such as `artist: song` or
+`Re:Zero opening`, is plain words (rule 9).
 `spotify`, `youtube_playlist` and `khinsider` expand to several items; the rest
-to one. `search`, `youtube`, `spotify` and `generic` need yt-dlp; a missing
-binary fails with `1011`.
+to one. Every kind needs mpv; `search`, `youtube`, `youtube_playlist`, `spotify`
+and `generic` also need yt-dlp. A missing binary fails with `1011`.
 
 ### 3.2 Request
 
@@ -201,6 +211,7 @@ One playable track in the queue.
 }
 ```
 
+- `title` is `null` until known; clients then show `input`.
 - `collection` is `null` for single-track requests. `index` is 0-based.
 - `status`: `queued` → `resolving` → `playing` → `played`, or `failed`.
   An item that was played and is played again goes back to `playing`.
@@ -290,6 +301,8 @@ current item skips to the next one.
 `player.pause/resume/toggle/seek/mute` with nothing playing fail with `1012`.
 `player.next` on the last item and `player.prev` on the first fail with `1013`.
 Volume is clamped to 0–130 and persisted to the user config, as today.
+`player.volume` also works with nothing playing: it sets the level the next
+item starts at.
 
 `levels` is `[[rms_dbfs, peak_dbfs], …]` per channel, or `null` (silence is
 `-Infinity` in mpv; on the wire it is sent as `-200.0`). `stats` is the object

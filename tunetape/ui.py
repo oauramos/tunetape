@@ -685,11 +685,11 @@ def show_help() -> Optional[str]:
 
 def show_debug() -> Optional[str]:
     """The Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
-    from tunetape.player import find_executable
+    from tunetape.player import tool_command
 
     while True:
         def found(name: str) -> str:
-            return "[b $success]ok[/]" if find_executable(name) else "[b $error]missing[/]"
+            return "[b $success]ok[/]" if tool_command(name) else "[b $error]missing[/]"
 
         about = Content.from_markup(
             f"[$foreground 60%]tunetape[/] $v   [$foreground 60%]mpv[/] {found('mpv')}"

@@ -21,7 +21,10 @@ MAX_ENTRIES = 50
 _VERSION = 1
 # "ai" is a single played suggestion (replay plays it); "ai_search" is a saved
 # Discover request (replay re-runs discovery for a fresh suggestion list).
-VALID_TYPES = ("youtube", "youtube_playlist", "spotify", "khinsider", "ai", "ai_search")
+# "direct" (an audio URL), "file" (a local path) and "generic" (any other page
+# yt-dlp can read) are the single-track kinds the daemon added.
+VALID_TYPES = ("youtube", "youtube_playlist", "spotify", "khinsider", "ai", "ai_search",
+               "direct", "file", "generic")
 # Types that are multi-track collections — they carry track_count + a resume
 # (last_index); single YouTube videos do not.
 _MULTI_TRACK_TYPES = ("khinsider", "spotify", "youtube_playlist")
