@@ -1,7 +1,12 @@
 import re
-import urllib.request
+import shutil
+import subprocess
+import urllib.error
 import urllib.parse
+import urllib.request
 from html.parser import HTMLParser
+
+from tunetape import __version__, debug
 
 # Track/Album live in a neutral module so other source adapters (spotify, the
 # YouTube-playlist code) don't have to import from khinsider. Re-exported here
@@ -107,10 +112,106 @@ class _TrackPageParser(HTMLParser):
                 self.direct_url = href
 
 
+# KHInsider's pages sit behind Cloudflare, which (since October 2026) turns
+# away Python's own TLS handshake: urllib gets "Sorry, you have been blocked"
+# whatever headers it sends. Fetchers that look like a browser get through:
+# curl_cffi, which presents Chrome's TLS and HTTP/2 fingerprint, and the
+# system curl over HTTP/1.1 (macOS's /usr/bin/curl is what the Homebrew build
+# uses, as it doesn't bundle curl_cffi). urllib stays last for when neither
+# is around. Only the HTML pages are guarded; the audio CDN serves mpv as is.
+_USER_AGENT = f"tunetape/{__version__} (+https://github.com/oauramos/tunetape)"
+_TIMEOUT = 30
+_STATUS_MARK = "\n--tunetape-status:"
+
+
+class _HTTPStatus(Exception):
+    """A fetcher reached the server and got a non-200 answer."""
+
+    def __init__(self, status: int, via: str):
+        super().__init__(f"HTTP {status} via {via}")
+        self.status = status
+
+
+# Which browser fingerprint gets through varies with the curl_cffi version
+# (0.13's "chrome" is turned away where its "safari" isn't), so try a few and
+# start with whichever worked last time.
+_IMPERSONATE = ["chrome", "safari", "firefox"]
+
+
+def _fetch_impersonating(url: str):
+    """curl_cffi posing as a browser, or None when it isn't installed."""
+    try:
+        from curl_cffi import requests as cffi_requests
+    except ImportError:
+        return None
+    refused = None
+    for target in list(_IMPERSONATE):
+        try:
+            response = cffi_requests.get(url, impersonate=target, timeout=_TIMEOUT)
+        except ValueError:  # a target this curl_cffi doesn't know
+            continue
+        if response.status_code == 200:
+            _IMPERSONATE.remove(target)
+            _IMPERSONATE.insert(0, target)
+            return response.text
+        refused = _HTTPStatus(response.status_code, f"curl_cffi ({target})")
+        if response.status_code != 403:
+            break  # a 404 is the same whatever we look like
+    raise refused or _HTTPStatus(0, "curl_cffi")
+
+
+def _fetch_with_curl(url: str):
+    """The system curl over HTTP/1.1, or None when there is no curl."""
+    curl = shutil.which("curl")
+    if curl is None or not url.startswith(("https://", "http://")):
+        return None
+    proc = subprocess.run(
+        [curl, "--http1.1", "--silent", "--show-error", "--location",
+         "--max-time", str(_TIMEOUT), "--user-agent", _USER_AGENT,
+         "--write-out", _STATUS_MARK + "%{http_code}", url],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        raise OSError(proc.stderr.decode("utf-8", "replace").strip() or "curl failed")
+    body, _, status = proc.stdout.decode("utf-8", "replace").rpartition(_STATUS_MARK)
+    if status.strip() != "200":
+        raise _HTTPStatus(int(status.strip() or 0), "curl")
+    return body
+
+
+def _fetch_with_urllib(url: str) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        raise _HTTPStatus(e.code, "urllib") from e
+
+
+_FETCHERS = (_fetch_impersonating, _fetch_with_curl, _fetch_with_urllib)
+
+
 def _fetch_page(url: str) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "tunetape/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    """The page's HTML, from the first fetcher KHInsider lets through."""
+    failures = []
+    for fetch in _FETCHERS:
+        try:
+            html = fetch(url)
+        except Exception as e:  # each fetcher has its own errors; try the next
+            debug.log(f"KHInsider fetch via {fetch.__name__}: {e}", "WARN")
+            failures.append(e)
+            continue
+        if html is not None:
+            return html
+    statuses = {e.status for e in failures if isinstance(e, _HTTPStatus)}
+    if statuses == {404}:
+        raise RuntimeError("KHInsider has no page at this URL (HTTP 404). Double-check the link.")
+    if 403 in statuses:
+        raise RuntimeError(
+            "KHInsider refused the connection (HTTP 403 from its Cloudflare protection). "
+            "Try again later; if it keeps happening, check that curl is installed."
+        )
+    raise RuntimeError(f"Could not reach KHInsider: {failures[-1] if failures else 'no fetcher'}")
 
 
 def fetch_album(url: str) -> Album:

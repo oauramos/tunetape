@@ -27,6 +27,11 @@ class Tunetape < Formula
   depends_on "python@3.12"
   depends_on "yt-dlp"       # required for YouTube playback
 
+  # curl_cffi (KHInsider pages, see khinsider.py) builds from source with a
+  # download step; the formula leaves it out and tunetape falls back to the
+  # system /usr/bin/curl, which KHInsider lets through.
+  pypi_packages exclude_packages: %w[curl-cffi cffi pycparser certifi]
+
   resource "linkify-it-py" do
     url "https://files.pythonhosted.org/packages/45/98/7a1a5f31fd5c7ba93e963b168e244b8e3dd705b3d2a718e3c3307583bf57/linkify_it_py-2.2.0.tar.gz"
     sha256 "907acd2d17ac1fbb9ddb62c8957ccbd6158cac602231a15c3b0cd1e215f03cee"

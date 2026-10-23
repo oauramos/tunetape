@@ -27,6 +27,9 @@ classifiers = [
 dependencies = [
     "textual>=8.2,<9",
     "rich>=14.2,<15",  # comes with textual; widgets.py measures with rich.cells
+    # KHInsider's Cloudflare turns away Python's own TLS; curl_cffi looks like a
+    # browser. Without it khinsider.py falls back to the system curl.
+    "curl_cffi>=0.7",
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
