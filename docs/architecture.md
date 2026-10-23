@@ -158,3 +158,19 @@ started).
 
 With those, the engine, the daemon, the CLIs and the conformance suite run
 against local `file` inputs with no network, no yt-dlp and no audio device.
+
+## Protocol and clients
+
+- [`protocol/v1.schema.json`](../protocol/v1.schema.json) is the protocol as
+  JSON Schema (draft 2020-12): envelopes, data types, every method's params
+  and result, every event and the error codes.
+  [`protocol/README.md`](../protocol/README.md) explains its layout and
+  versioning.
+- `tests/conformance/` checks a daemon against it, black-box: it starts the
+  daemon in a temp `TUNETAPE_DATA_DIR` with the fake mpv, speaks raw NDJSON to
+  the endpoint in `daemon.json` and validates every message against the
+  schema. It runs in the default `pytest`; `TUNETAPE_CONFORMANCE_DAEMON` points
+  it at another implementation.
+- [`rust/tunetape-cli/`](../rust/tunetape-cli/README.md) is a second client,
+  in Rust, with the same subcommands, output and exit codes as the Python CLI
+  and its own implementation of discovery and spawn-on-demand (§1.2–§1.3).
