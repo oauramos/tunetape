@@ -68,14 +68,26 @@ def schema():
 
 @pytest.fixture
 def daemon_factory(schema):
-    """``start(fake_duration=30, data_dir=None, cmd=None, env=None, wait=True)`` -> Daemon."""
+    """``start(fake_duration=30, data_dir=None, cmd=None, env=None, wait=True,
+    long_dir=False, tcp=False)`` -> Daemon.
+
+    ``long_dir`` makes a data dir too long for ``<data_dir>/daemon.sock``;
+    ``tcp`` sets TUNETAPE_DAEMON_TRANSPORT=tcp (loopback TCP + token on POSIX).
+    """
     started = []
     dirs = []
 
-    def start(fake_duration=30, data_dir=None, cmd=None, env=None, wait=True):
+    def start(fake_duration=30, data_dir=None, cmd=None, env=None, wait=True,
+              long_dir=False, tcp=False):
         if data_dir is None:
             data_dir = short_temp_dir("ttc-")
             dirs.append(data_dir)
+            if long_dir:
+                data_dir = os.path.join(data_dir, "d" * 60, "e" * 40)
+                os.makedirs(data_dir)
+        env = dict(env or {})
+        if tcp:
+            env["TUNETAPE_DAEMON_TRANSPORT"] = "tcp"
         d = Daemon(schema, data_dir, cmd=cmd, fake_duration=fake_duration, env=env)
         started.append(d)
         if wait:
@@ -96,6 +108,12 @@ def daemon_factory(schema):
 @pytest.fixture
 def daemon(daemon_factory):
     return daemon_factory()
+
+
+@pytest.fixture
+def tcp_daemon(daemon_factory):
+    """A daemon on the tcp transport: native on Windows, forced on POSIX."""
+    return daemon_factory(tcp=True)
 
 
 @pytest.fixture

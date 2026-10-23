@@ -354,7 +354,8 @@ class Daemon:
     def _env(self, fake_duration, extra):
         env = dict(os.environ)
         # The daemon must never see the user's AI keys or real data dir.
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TUNETAPE_CONFORMANCE_DAEMON"):
+        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "TUNETAPE_CONFORMANCE_DAEMON",
+                    "TUNETAPE_DAEMON_TRANSPORT"):
             env.pop(key, None)
         env["TUNETAPE_DATA_DIR"] = self.data_dir
         env["XDG_DATA_HOME"] = os.path.join(self.data_dir, "xdg")

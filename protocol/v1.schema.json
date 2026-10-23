@@ -162,7 +162,7 @@
       ]
     },
     "DiscoveryUnix": {
-      "description": "POSIX: a Unix domain socket. Clients take `path` from here and never compute it.",
+      "description": "POSIX: a Unix domain socket, <data_dir>/daemon.sock or, when that is 100 bytes or longer, <tmpdir>/tunetape-<uid>/<sha256(data_dir)[:12]>.sock. Clients take `path` from here and never compute it.",
       "type": "object",
       "required": ["transport", "path"],
       "properties": {
@@ -171,7 +171,7 @@
       }
     },
     "DiscoveryTcp": {
-      "description": "Windows: TCP on loopback with a 32-byte url-safe base64 token (no padding, 43 chars).",
+      "description": "Windows (and POSIX under TUNETAPE_DAEMON_TRANSPORT=tcp): TCP on loopback with a 32-byte url-safe base64 token (no padding, 43 chars).",
       "type": "object",
       "required": ["transport", "host", "port", "token"],
       "properties": {
@@ -183,7 +183,7 @@
     },
 
     "InputKind": {
-      "description": "How the daemon classified an input (§3.1).",
+      "description": "How the daemon classified an input (§3.1). A path-looking input that names no file, or a URL scheme other than http, https, file and spotify (an input without whitespace matching ^[A-Za-z][A-Za-z0-9+.-]+:), fails with 1010 instead.",
       "enum": ["search", "spotify", "youtube_playlist", "youtube", "khinsider", "file", "direct", "generic"]
     },
     "Request": {
@@ -221,7 +221,7 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "request_id": { "type": "string", "minLength": 1 },
-        "title": { "type": ["string", "null"] },
+        "title": { "description": "null until known; clients then show `input`.", "type": ["string", "null"] },
         "kind": { "$ref": "#/$defs/InputKind" },
         "input": { "type": "string" },
         "collection": { "oneOf": [{ "$ref": "#/$defs/Collection" }, { "type": "null" }] },

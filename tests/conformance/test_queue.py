@@ -94,11 +94,45 @@ def test_play_is_add_at_now(conn, media):
     "av://lavfi:sine",
     "lavfi:sine=f=440",
     "memory://abc",
+    "Re:Zero",  # no whitespace + a 2+ char scheme: a URL, not words (§3.1)
 ])
 def test_unrecognized_scheme_fails_1010(conn, bad):
     err = conn.error("queue.add", {"input": bad}, code=1010)
     assert err["message"]
     conn.error("play", {"input": bad}, code=1010)
+    assert status(conn)["length"] == 0
+
+
+@pytest.mark.parametrize("missing", [
+    "/nonexistent-tunetape-dir/song.mp3",
+    "./no-such-tunetape-file.mp3",
+    "../no-such-tunetape-file.mp3",
+    "~/no-such-tunetape-file-9f2c.mp3",
+    "file:///nonexistent-tunetape-dir/song.mp3",
+])
+def test_path_to_no_file_fails_1010(conn, missing):
+    # A path-looking input that names no file is never a search (§3.1 rule 6).
+    err = conn.error("queue.add", {"input": missing}, code=1010)
+    assert err["message"]
+    assert status(conn)["length"] == 0
+
+
+@pytest.mark.parametrize("needs_ytdlp", [
+    "ytsearch1:daft punk around the world",
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://www.youtube.com/playlist?list=PL0123456789abcdef",
+    "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+    "https://example.com/some/page",
+    "daft punk around the world",
+    # Whitespace makes these plain words (a search), not a scheme: §3.1.
+    "artist: song",
+    "Re:Zero opening",
+])
+def test_missing_ytdlp_fails_1011_synchronously(conn, needs_ytdlp):
+    # The suite points TUNETAPE_YTDLP at a program that does not exist, which
+    # counts as missing (docs/architecture.md, "Test seams").
+    err = conn.error("queue.add", {"input": needs_ytdlp}, code=1011)
+    assert err["message"]
     assert status(conn)["length"] == 0
 
 

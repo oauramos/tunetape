@@ -51,7 +51,10 @@ pytest tests/conformance            # the Python daemon: python -m tunetape daem
 
 Point it at any other implementation with `TUNETAPE_CONFORMANCE_DAEMON`, a
 command line split shell-style. The daemon must honour `TUNETAPE_DATA_DIR`,
-`TUNETAPE_MPV` and `TUNETAPE_YTDLP`, and run in the foreground:
+`TUNETAPE_MPV`, `TUNETAPE_YTDLP` (the suite points it at a program that does
+not exist, which must count as a missing yt-dlp: `1011`) and
+`TUNETAPE_DAEMON_TRANSPORT=tcp` (loopback TCP + token on POSIX, so the token
+tests run on every OS), and run in the foreground:
 
 ```sh
 TUNETAPE_CONFORMANCE_DAEMON="/path/to/my-daemon --idle-timeout 0" pytest tests/conformance
@@ -60,5 +63,5 @@ TUNETAPE_CONFORMANCE_DAEMON="/path/to/my-daemon --idle-timeout 0" pytest tests/c
 The suite skips as a whole, with the reason, when `jsonschema`,
 `tests/fakes/fake_mpv.py` or (for the default command) `tunetape.daemon` is
 missing. On Windows the tests that play audio through the fake mpv are skipped
-unless `TUNETAPE_CONFORMANCE_PLAYBACK=1`; the transport, handshake and framing
-tests still run there over TCP.
+unless `TUNETAPE_CONFORMANCE_PLAYBACK=1`; the transport, handshake, framing and
+input-classification tests still run there.
