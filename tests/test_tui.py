@@ -1,14 +1,22 @@
-"""Headless tests for the Textual interface: the flow thread, every screen, the player."""
+"""Headless tests for the Textual interface: the flow thread, every screen, the player.
+
+The player and the session talk to the daemon through ``tunetape.demo.FakeClient``;
+the last test runs the real daemon (with the fake mpv) under the real session.
+"""
 
 import asyncio
+import time
 from datetime import datetime, timezone
 
 import pytest
 from textual import events
+from textual.widgets import Input
 
 import tunetape.__main__ as main
-from tunetape import config, ui
-from tunetape.demo import DEMO_ALBUM, DEMO_TRACKS, FakeController, playlist_info_for
+from conftest import needs_fake_mpv, pid_alive
+from tunetape import client as client_mod, config, debug, ui
+from tunetape.client import DaemonError, DaemonUnavailable
+from tunetape.demo import DEMO_ALBUM, DEMO_TRACKS, FakeClient, album_client
 from tunetape.models import Track
 from tunetape.widgets import (
     KeyCaps, LevelMeter, Tuna, balanced_rows, graph_rows, marquee_window,
@@ -17,13 +25,19 @@ from tunetape.widgets import (
 NOTHING = object()
 
 
+def _no_daemon(spawn):
+    raise AssertionError("this test must not reach a real daemon")
+
+
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    """Keep config.json (theme, volume) out of the real data dir, and start
-    every test with fresh remembered highlights."""
-    monkeypatch.setattr(config.paths, "data_dir", lambda: str(tmp_path))
+    """Keep config.json (theme, volume) and any daemon files out of the real data
+    dir, start every test with fresh remembered highlights, and make sure no
+    test but the end-to-end one can reach (or start) a real daemon."""
+    monkeypatch.setenv("TUNETAPE_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(ui, "_settings_at", {})
     monkeypatch.setattr(ui, "_history_at", 0)
+    monkeypatch.setattr(main, "_link", main._DaemonLink(_no_daemon))
     return tmp_path
 
 
@@ -70,8 +84,12 @@ def drive(flow, script, size=(108, 30)):
     return out.get("result", NOTHING), app
 
 
-def keys(*names, wait_for=None):
-    """A script that waits for a screen, then presses ``names``."""
+def keys(*names, wait_for=None, settle=0.0):
+    """A script that waits for a screen, then presses ``names``.
+
+    ``settle`` waits that long after the last key, so controls the player
+    hands to its poll thread reach the (fake) daemon before the app closes.
+    """
 
     async def script(pilot, app):
         if wait_for:
@@ -80,8 +98,14 @@ def keys(*names, wait_for=None):
         for name in names:
             await pilot.press(name)
             await pilot.pause(0.05)
+        if settle:
+            await pilot.pause(settle)
 
     return script
+
+
+def text(app, selector):
+    return str(app.screen.query_one(selector).render())
 
 
 # --- key caps ----------------------------------------------------------------
@@ -129,74 +153,115 @@ def test_level_meter_holds_peaks():
     assert [rms for rms, _ in meter._levels] == [float("-inf")] * 2
 
 
+
+
 # --- the player --------------------------------------------------------------
 
-def album_flow(index=11, controller=None, results=None):
-    controller = controller or FakeController(187, 41, frozen=True)
-
-    def flow():
-        return ui.play(DEMO_TRACKS[index], controller, playlist_info_for(index, len(DEMO_TRACKS)),
-                       source="KHInsider", subtitle=DEMO_ALBUM, tracks=DEMO_TRACKS)
-
-    return flow, controller
+def player(client):
+    """The flow that shows ``client``'s queue on the player."""
+    return lambda: ui.play(client)
 
 
-def play_keys(names, index=11, size=(108, 30)):
-    flow, controller = album_flow(index)
-    result, app = drive(flow, keys(*names, wait_for="PlayerScreen"), size)
-    return result, controller, app
+def play_keys(names, index=11, size=(108, 30), client=None):
+    client = client or album_client(index=index, frozen=True)
+    result, app = drive(player(client), keys(*names, wait_for="PlayerScreen", settle=0.3), size)
+    return result, client, app
 
 
 def test_counter_shows_position():
     def counter(app):
         try:
-            return str(app.screen.query_one("#elapsed").render())
+            return text(app, "#elapsed")
         except Exception:
             return None
 
     async def script(pilot, app):
         await until(pilot, lambda: counter(app) == "00:41")
 
-    flow, _ = album_flow()
-    drive(flow, script)
+    drive(player(album_client(frozen=True)), script)
 
 
 def test_space_toggles_pause():
-    assert play_keys(["space"])[1].is_paused()
+    client = play_keys(["space"])[1]
+    assert client.paused and client.called("toggle") == [()]
 
 
 def test_seek_keys():
-    _, controller, _ = play_keys(["right", "right", "left", "full_stop", "comma", "comma"])
-    assert controller.get_position() == 41 + 10 + 10 - 10 + 30 - 30 - 30
+    _, client, _ = play_keys(["right", "right", "left", "full_stop", "comma", "comma"])
+    assert client.position == 41 + 10 + 10 - 10 + 30 - 30 - 30
+    assert [args for args in client.called("seek")] == [
+        (10, True), (10, True), (-10, True), (30, True), (-30, True), (-30, True)]
 
 
 @pytest.mark.parametrize("names, volume", [(["up", "plus"], 90), (["down", "minus"], 70)])
 def test_volume_keys(names, volume):
-    assert play_keys(names)[1].get_volume() == volume
+    client = play_keys(names)[1]
+    assert client.volume_level == volume
+    assert all(value is None and abs(delta) == 5 for value, delta in client.called("volume"))
 
 
 def test_mute():
-    assert play_keys(["m"])[1].is_muted()
+    assert play_keys(["m"])[1].muted
 
 
 @pytest.mark.parametrize("key, result", [
-    ("n", "next_track"),
-    ("p", "prev_track"),
     ("b", "menu"),
     ("escape", "menu"),
     ("q", "quit"),
     ("ctrl+c", "quit"),
 ])
 def test_player_exit_keys(key, result):
-    assert play_keys([key])[0] == result
+    flow_result, client, _ = play_keys([key])
+    assert flow_result == result
+    # Leaving the player never stops the music; quitting is __main__'s to do.
+    assert client.state == "playing" and client.called("stop") == []
+
+
+@pytest.mark.parametrize("key, method, index", [("n", "next", 12), ("p", "prev", 10)])
+def test_next_and_prev_move_the_daemon_and_stay_on_the_player(key, method, index):
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        screen = app.screen
+        await pilot.press(key)
+        await until(pilot, lambda: text(app, "#title") == DEMO_TRACKS[index])
+        seen["same screen"] = app.screen is screen
+        seen["subtitle"] = text(app, "#subtitle")
+
+    client = album_client(frozen=True)
+    result, _ = drive(player(client), script)
+    assert result is NOTHING and client.called(method) == [()] and client.index == index
+    assert seen == {"same screen": True,
+                    "subtitle": f"{DEMO_ALBUM} · track {index + 1}/{len(DEMO_TRACKS)}"}
 
 
 def test_prev_disabled_on_first_track():
-    assert play_keys(["p"], index=0)[0] is NOTHING
+    result, client, _ = play_keys(["p"], index=0)
+    assert result is NOTHING and client.called("prev") == []
 
 
 def test_next_disabled_on_last_track():
-    assert play_keys(["n"], index=len(DEMO_TRACKS) - 1)[0] is NOTHING
+    result, client, _ = play_keys(["n"], index=len(DEMO_TRACKS) - 1)
+    assert result is NOTHING and client.called("next") == []
+
+
+def test_a_single_track_has_no_next_prev_or_queue():
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(0.2)
+        seen["caps"] = text(app, "#player-caps")
+        seen["queue"] = app.screen.query_one("#queue").display
+        await pilot.press("n", "p")
+        await pilot.pause(0.3)
+
+    client = FakeClient(["Just One"], frozen=True)
+    drive(player(client), script)
+    assert " next " not in seen["caps"] and " prev " not in seen["caps"]
+    assert seen["queue"] is False
+    assert client.called("next") == client.called("prev") == []
 
 
 def test_player_help_opens_and_closes():
@@ -211,8 +276,7 @@ def test_player_help_opens_and_closes():
         await until(pilot, on(app, "PlayerScreen"))
         seen.append(type(app.screen).__name__)
 
-    flow, _ = album_flow()
-    assert drive(flow, script)[0] is NOTHING  # the player keeps playing under help
+    assert drive(player(album_client(frozen=True)), script)[0] is NOTHING
     assert seen == ["HelpModal", "PlayerScreen"]
 
 
@@ -221,12 +285,14 @@ def test_q_on_player_help_quits():
 
 
 def test_queue_takes_arrows_once_focused():
-    result, controller, _ = play_keys(["tab", "down"])
-    assert controller.get_volume() == 80 and result is NOTHING
+    result, client, _ = play_keys(["tab", "down"])
+    assert client.volume_level == 80 and result is NOTHING
 
 
 def test_queue_enter_jumps():
-    assert play_keys(["tab", "down", "down", "enter"])[0] == "jump_track:13"
+    result, client, _ = play_keys(["tab", "down", "down", "enter"])
+    assert result is NOTHING
+    assert client.called("jump") == [(13,)] and client.index == 13
 
 
 def test_escape_leaves_queue_before_menu():
@@ -234,19 +300,26 @@ def test_escape_leaves_queue_before_menu():
     assert play_keys(["tab", "escape", "escape"])[0] == "menu"
 
 
+def test_a_key_pressed_on_the_way_out_still_counts():
+    result, client, _ = play_keys(["up", "b"])
+    assert result == "menu" and client.volume_level == 85
+
+
 @pytest.mark.parametrize("names, check", [
-    (["m"], lambda r, c: c.is_muted()),
-    (["p"], lambda r, c: r == "prev_track"),
+    (["m"], lambda r, c: c.muted),
+    (["p"], lambda r, c: c.index == 10),
     (["b"], lambda r, c: r == "menu"),
 ])
-def test_keys_work_at_60_columns(names, check):
-    result, controller, _ = play_keys(names, size=(60, 24))
-    assert check(result, controller)
+@pytest.mark.parametrize("size", [(60, 30), (60, 24), (60, 20)])
+def test_keys_work_at_60_columns(names, check, size):
+    result, client, _ = play_keys(names, size=size)
+    assert check(result, client)
 
 
 @pytest.mark.parametrize("size, queue", [
     ((108, 30), True),
     ((80, 24), False),
+    ((60, 30), False),
     ((60, 24), False),
     ((60, 20), False),
 ])
@@ -262,28 +335,42 @@ def test_panels_fit_the_terminal(size, queue):
             seen[name] = region.height > 0 and region.right <= size[0] and region.bottom <= size[1]
         seen["queue"] = screen.query_one("#queue").display
 
-    flow, _ = album_flow()
-    drive(flow, script, size)
+    drive(player(album_client(frozen=True)), script, size)
     assert seen.pop("queue") is queue
     assert all(seen.values()), seen
 
 
-def test_level_and_stream_panels_follow_the_controller():
+def test_level_and_stream_panels_follow_the_daemon():
     seen = {}
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.pause(1.3)  # a stats read lands once a second
+        await pilot.pause(1.3)  # stats ride along once a second
         screen = app.screen
-        seen["meter"] = str(screen.query_one("#meter").render())
-        seen["stream"] = str(screen.query_one("#stream-info").render())
+        seen["meter"] = text(app, "#meter")
+        seen["stream"] = text(app, "#stream-info")
         seen["samples"] = len(screen.query_one("#level-graph")._samples)
 
-    flow, _ = album_flow(controller=FakeController(187, 41))
-    drive(flow, script)
+    client = album_client()
+    drive(player(client), script)
     assert seen["meter"].startswith("L ") and "\nR " in seen["meter"]
     assert "opus · 131 kb/s" in seen["stream"] and "48 kHz · stereo" in seen["stream"]
     assert seen["samples"] >= 5
+    # One player.status per poll, and the queue only when the track changes.
+    assert len(client.called("status")) >= 10 and len(client.called("queue")) == 1
+
+
+def test_loading_shows_on_the_status_line():
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.pause(0.2)
+        seen["loading"] = text(app, "#status")
+        await until(pilot, lambda: "playing" in text(app, "#status"))
+
+    drive(player(album_client(load_seconds=0.8)), script)
+    assert seen["loading"] == "… loading track 12/24"
 
 
 @pytest.mark.parametrize("size, labels", [((96, 30), True), ((95, 30), False), ((60, 24), False)])
@@ -293,10 +380,9 @@ def test_player_caps_drop_labels_below_96_columns(size, labels):
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
         await pilot.pause(0.2)
-        seen["text"] = str(app.screen.query_one("#player-caps").render())
+        seen["text"] = text(app, "#player-caps")
 
-    flow, _ = album_flow()
-    drive(flow, script, size)
+    drive(player(album_client(frozen=True)), script, size)
     assert " space " in seen["text"] and " q " in seen["text"]
     assert ("play/pause" in seen["text"]) is labels
     assert "vol" in seen["text"]  # the volume gauge stays as it is
@@ -306,24 +392,21 @@ def test_long_titles_scroll_like_a_car_radio():
     long_title = "A Very Long Song Title That Will Never Fit In Sixty Columns (Remastered)"
     seen = []
 
-    def title(app):
-        return str(app.screen.query_one("#title").render())
-
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
         await pilot.pause(0.5)
-        seen.append(title(app))
+        seen.append(text(app, "#title"))
         await pilot.pause(3.0)  # past the two-second hold
-        seen.append(title(app))
+        seen.append(text(app, "#title"))
 
-    drive(lambda: ui.play(long_title, FakeController(200, 10, frozen=True)), script, (60, 24))
+    drive(player(FakeClient([long_title], position=10, frozen=True)), script, (60, 24))
     start, later = seen
     assert long_title.startswith(start) and len(start) < len(long_title)
     assert later != start and later.strip() in long_title and len(later) == len(start)
 
 
 def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
-    flow, controller = album_flow()
+    client = album_client(frozen=True)
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
@@ -331,34 +414,34 @@ def test_mouse_wheel_changes_volume_but_scrolls_the_queue():
         await pilot._post_mouse_events([events.MouseScrollUp], "#elapsed")
         await pilot._post_mouse_events([events.MouseScrollDown], "#title")
         await pilot._post_mouse_events([events.MouseScrollDown], "#queue")
-        await pilot.pause(0.1)
+        await pilot.pause(0.3)
 
-    drive(flow, script)
-    assert controller.get_volume() == 80 + 5 + 5 - 5
+    drive(player(client), script)
+    assert client.volume_level == 80 + 5 + 5 - 5
 
 
 def test_volume_gauge_sits_after_quit_and_sets_volume_on_click():
-    flow, controller = album_flow()
+    client = album_client(frozen=True)
     seen = {}
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.pause(0.5)  # a state poll, so the gauge knows the volume
+        await pilot.pause(0.5)
         caps = app.screen.query_one(KeyCaps)
         quit_box = next(h for h in caps._hits if h[4] >= 0 and caps.caps[h[4]].label == "quit")
         tail = next(h for h in caps._hits if h[4] == -1)
         seen["after_quit"] = tail[2] == quit_box[2] and tail[0] > quit_box[1]
         seen["at_right_edge"] = tail[1] == caps.size.width
         await pilot.click("#player-caps", offset=(tail[0] + 10 + 2, tail[2]))  # 3rd of 10 cells
-        await pilot.pause(0.1)
+        await pilot.pause(0.3)
 
-    drive(flow, script)
+    drive(player(client), script)
     assert seen == {"after_quit": True, "at_right_edge": True}
-    assert controller.get_volume() == 30
+    assert client.volume_level == 30 and client.called("volume") == [(30.0, None)]
 
 
 def test_clicking_caps_and_the_bar():
-    flow, controller = album_flow()
+    client = album_client(frozen=True)
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
@@ -368,48 +451,92 @@ def test_clicking_caps_and_the_bar():
             if caps.caps[index].label == "mute":
                 await pilot.click("#player-caps", offset=(x0 + 1, y0))
         await pilot.click("#progress Bar", offset=(0, 0))  # the very start
-        await pilot.pause(0.1)
+        await pilot.pause(0.3)
 
-    drive(flow, script)
-    assert controller.is_muted()
-    assert controller.get_position() == 0
-
-
-@pytest.mark.parametrize("info, result", [
-    (None, "menu"),
-    ({"index": 0, "track_label": "1/2", "has_next": True, "has_prev": False}, "next_track"),
-])
-def test_track_end_moves_on(info, result):
-    async def script(pilot, app):
-        await pilot.pause(1.0)
-
-    flow_result, _ = drive(lambda: ui.play("x", FakeController(1.0, 0.9), info), script)
-    assert flow_result == result
+    drive(player(client), script)
+    assert client.muted
+    assert client.called("seek") == [(0.0, False)] and client.position == 0
 
 
-def test_next_track_reuses_the_player_screen():
-    screens = []
-
-    def flow():
-        for index in (3, 4):
-            controller = FakeController(187, 0, frozen=True)
-            screens.append(ui.play(DEMO_TRACKS[index], controller,
-                                   playlist_info_for(index, len(DEMO_TRACKS)),
-                                   tracks=DEMO_TRACKS))
-            screens.append(ui._app.screen)
-        return screens
+def test_the_daemon_moving_on_updates_the_screen_in_place():
+    seen = {}
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.press("n")
-        await until(pilot, lambda: len(screens) == 2)
+        screen = app.screen
+        seen["first"] = text(app, "#title")
+        await until(pilot, lambda: text(app, "#title") == "Two")
+        seen["same screen"] = app.screen is screen
+        seen["subtitle"] = text(app, "#subtitle")
+        seen["highlighted"] = screen.query_one("#queue").highlighted
+
+    client = FakeClient(["One", "Two", "Three"], album="Tape", durations=[0.4, 30, 30])
+    result, _ = drive(player(client), script)
+    assert result is NOTHING
+    assert seen == {"first": "One", "same screen": True, "subtitle": "Tape · track 2/3",
+                    "highlighted": 1}
+
+
+def test_queue_end_returns_to_the_menu():
+    async def script(pilot, app):
+        await pilot.pause(1.2)
+
+    result, _ = drive(player(FakeClient(["x"], durations=[0.4])), script)
+    assert result == "menu"
+
+
+def test_a_failure_that_stopped_playback_is_shown():
+    seen = {}
+    client = album_client(frozen=True)
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        client.state, client.message = "idle", "Could not load track: gone"
+        await until(pilot, on(app, "ErrorModal"))
+        seen["error"] = app.screen.message
+        await pilot.press("enter")
+
+    assert drive(player(client), script)[0] == "menu"
+    assert seen["error"] == "Could not load track: gone"
+
+
+def test_a_skipped_track_is_toasted(monkeypatch):
+    toasts = []
+    monkeypatch.setattr(ui.TunetapeApp, "notify",
+                        lambda self, message, **kw: toasts.append((kw.get("title"), message)))
+    client = album_client(frozen=True)
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        with client._lock:  # what fail-forward looks like: marked failed, on to the next
+            client.items[11].update(status="failed", error="Could not load track: gone")
+            client._begin(12)
+        await until(pilot, lambda: text(app, "#title") == DEMO_TRACKS[12])
         await pilot.pause(0.1)
-        assert str(app.screen.query_one("#title").render()) == DEMO_TRACKS[4]
-        await pilot.press("b")
+
+    drive(player(client), script)
+    assert toasts == [(DEMO_TRACKS[11], "Could not load track: gone")]
+
+
+def test_the_daemon_going_away_mid_play_raises():
+    client = album_client(frozen=True)
+
+    def flow():
+        try:
+            return ui.play(client)
+        except DaemonUnavailable as e:
+            return f"lost: {e}"
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "PlayerScreen"))
+        client.down = True
 
     result, _ = drive(flow, script)
-    assert result[0] == "next_track" and result[2] == "menu"
-    assert result[1] is result[3]
+    assert result == "lost: The connection to the tunetape daemon was lost."
+
+
+def test_play_on_an_idle_daemon_returns_at_once():
+    assert drive(player(FakeClient(["x"], state="idle")), keys())[0] == "menu"
 
 
 # --- the session flow --------------------------------------------------------
@@ -489,7 +616,7 @@ def test_menu_shows_the_ascii_tuna_when_it_fits(size, ascii):
 
 
 @pytest.mark.parametrize("flow, wait_for, back, quit_", [
-    (lambda: ui.show_history(HISTORY), "HistoryScreen", ("back", None), ("quit", None)),
+    (lambda: ui.show_history(SCREEN_HISTORY), "HistoryScreen", ("back", None), ("quit", None)),
     (lambda: ui.show_settings(True), "OptionsScreen", "b", "q"),
     (ui.show_ai_settings, "OptionsScreen", "back", "quit"),
     (lambda: ui.show_ai_results("x", [Track("A", "a")]), "SuggestionsScreen",
@@ -542,9 +669,9 @@ def test_menu_click():
     async def script(pilot, app):
         await until(pilot, on(app, "MenuScreen"))
         await pilot.pause(0.1)
-        caps = app.screen.query_one(KeyCaps)
+        caps = app.screen.query_one("#menu-caps", KeyCaps)
         x0, _, y0, _, _ = next(h for h in caps._hits if caps.caps[h[4]].label == "Settings")
-        await pilot.click(KeyCaps, offset=(x0 + 2, y0 + 1))
+        await pilot.click("#menu-caps", offset=(x0 + 2, y0 + 1))
 
     assert drive(ui.main_menu, script)[0] == "4"
 
@@ -562,7 +689,7 @@ def test_prompt_url_detects_and_returns():
     assert drive(ui.prompt_url, keys("escape", wait_for="PromptScreen"))[0] == ""
 
 
-HISTORY = [
+SCREEN_HISTORY = [
     {"type": "youtube", "url": "u1", "title": "One", "play_count": 2,
      "last_played": datetime.now(timezone.utc).isoformat()},
     {"type": "khinsider", "url": "u2", "title": "Two", "track_count": 10, "last_index": 3},
@@ -570,14 +697,14 @@ HISTORY = [
 
 
 @pytest.mark.parametrize("names, result", [
-    (["enter"], ("play", HISTORY[0])),
+    (["enter"], ("play", SCREEN_HISTORY[0])),
     (["down", "d"], ("delete", "u2")),
     (["c"], ("clear", None)),
     (["escape"], ("back", None)),
     (["q"], ("quit", None)),
 ])
 def test_history(names, result):
-    assert drive(lambda: ui.show_history(HISTORY), keys(*names, wait_for="HistoryScreen"))[0] == result
+    assert drive(lambda: ui.show_history(SCREEN_HISTORY), keys(*names, wait_for="HistoryScreen"))[0] == result
 
 
 def test_suggestions():
@@ -635,26 +762,367 @@ def test_verify_ai_connection_reports_failures():
     assert result == (False, "no route")
 
 
-# --- __main__ end to end ------------------------------------------------------
+# --- __main__: the session against a fake daemon -----------------------------
 
-def test_session_plays_a_youtube_url(monkeypatch):
-    controller = FakeController(200, 10, frozen=True)
-    monkeypatch.setattr(main, "check_dependencies", lambda **kw: None)
-    monkeypatch.setattr(main, "get_stream_info",
-                        lambda url: {"stream_url": "s", "title": "A Song"})
-    monkeypatch.setattr(main, "MPVController", lambda *a, **kw: controller)
-    monkeypatch.setattr(main.history, "record", lambda *a, **kw: None)
+@pytest.fixture
+def daemon(monkeypatch):
+    """A FakeClient as the session's daemon, idle until something is posted."""
+    fake = FakeClient(frozen=True)
+    monkeypatch.setattr(main, "_link", main._DaemonLink(lambda spawn: fake))
+    return fake
+
+
+def session(script, size=(108, 30)):
+    return drive(main._session, script, size)
+
+
+async def post_url(pilot, app, url):
+    await until(pilot, on(app, "MenuScreen"))
+    await pilot.press("1")
+    await until(pilot, on(app, "PromptScreen"))
+    app.screen.query_one(Input).value = url
+    await pilot.press("enter")
+
+
+def now_row(app):
+    """The menu's now-playing row: its text, or None while it is hidden."""
+    row = app.screen.query_one("#menu-now")
+    return str(row.render()).strip() if row.display else None
+
+
+def test_play_back_keeps_playing_and_the_menu_reopens_it(daemon):
+    seen = {}
 
     async def script(pilot, app):
-        await until(pilot, on(app, "MenuScreen"))
-        await pilot.press("1")
-        await until(pilot, on(app, "PromptScreen"))
-        await pilot.press(*"https://youtu.be/abc", "enter")
+        await post_url(pilot, app, "https://youtu.be/abc")
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.press("up", "b")
+        seen["title"] = text(app, "#title")
+        await pilot.press("b")
+        await until(pilot, on(app, "MenuScreen"))
+        await until(pilot, lambda: now_row(app) is not None)
+        seen["row"] = now_row(app)
+        seen["state after b"] = daemon.state
+        await pilot.press("n")
+        await until(pilot, on(app, "PlayerScreen"))
+        seen["reopened"] = text(app, "#title")
+        await pilot.press("q")
+
+    result, _ = session(script)
+    assert result is None  # the session ended on its own
+    assert daemon.called("play") == [("https://youtu.be/abc", None, 0)]
+    assert seen == {"title": "https://youtu.be/abc", "row": "n ▶ https://youtu.be/abc",
+                    "state after b": "playing", "reopened": "https://youtu.be/abc"}
+    # q stopped the music and hung up.
+    assert daemon.state == "idle" and daemon.called("stop") == [()] and daemon.closed
+
+
+def test_q_on_the_menu_stops_playback_too(daemon):
+    async def script(pilot, app):
+        await post_url(pilot, app, "https://youtu.be/abc")
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("b")
         await until(pilot, on(app, "MenuScreen"))
         await pilot.press("q")
 
-    result, _ = drive(main._session, script)
-    assert result is None  # the session ended on its own
-    assert config.get_volume() == 85  # saved when the track was left
+    assert session(script)[0] is None
+    assert daemon.state == "idle" and daemon.called("stop") == [()]
+
+
+def test_ctrl_c_stops_playback(daemon):
+    async def script(pilot, app):
+        await post_url(pilot, app, "https://youtu.be/abc")
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("ctrl+c")
+
+    session(script)
+    assert daemon.called("stop") == [()]
+
+
+@pytest.mark.parametrize("size, ascii", [((108, 32), True), ((108, 30), False),
+                                         ((60, 30), False), ((60, 24), False), ((60, 20), False)])
+def test_menu_shows_what_the_daemon_already_plays(monkeypatch, size, ascii):
+    long_title = "A Very Long Song Title That Will Never Fit In Sixty Columns (Remastered)"
+    fake = FakeClient([long_title], frozen=True)  # posted from the CLI, say
+    monkeypatch.setattr(main, "_link", main._DaemonLink(lambda spawn: fake))
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await until(pilot, lambda: now_row(app) is not None)
+        await pilot.pause(0.1)
+        seen["row"] = now_row(app)
+        for name in ("menu-now", "menu-caps", "menu-nav"):
+            region = app.screen.query_one(f"#{name}").region
+            seen[name] = (region.height > 0 and region.x >= 0 and region.right <= size[0]
+                          and region.bottom <= size[1])
+        seen["screen"] = type(app.screen).__name__  # no jump into the player
+        seen["ascii"] = app.screen.query_one("#ascii-tuna").display
+        await pilot.press("n")
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("q")
+
+    session(script, size)
+    assert seen.pop("screen") == "MenuScreen"
+    assert seen.pop("ascii") is ascii  # the big tuna steps aside when the row needs its rows
+    row = seen.pop("row")
+    assert row.startswith("n ▶ A Very Long")
+    if size[0] == 60:
+        assert row.endswith("…") and len(row) <= 60 - 4
+    assert all(seen.values()), seen
+
+
+def test_the_now_playing_row_goes_when_playback_ends(daemon):
+    seen = {}
+
+    async def script(pilot, app):
+        await post_url(pilot, app, "https://youtu.be/abc")
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("b")
+        await until(pilot, on(app, "MenuScreen"))
+        await until(pilot, lambda: now_row(app) is not None)
+        daemon.stop()  # say, `tunetape stop` from another terminal
+        await until(pilot, lambda: now_row(app) is None)
+        await pilot.press("n")  # nothing to go back to
+        await pilot.pause(0.2)
+        seen["screen"] = type(app.screen).__name__
+        await pilot.press("q")
+
+    session(script)
+    assert seen == {"screen": "MenuScreen"}
+
+
+def test_menu_up_from_the_buttons_reaches_the_now_playing_row(monkeypatch):
+    fake = FakeClient(["Song"], frozen=True)
+    monkeypatch.setattr(main, "_link", main._DaemonLink(lambda spawn: fake))
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await until(pilot, lambda: now_row(app) is not None)
+        await pilot.press("up", "enter")
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("q")
+
+    assert session(script)[0] is None
+
+
+@pytest.mark.parametrize("error", [
+    DaemonError(1010, "Unsupported link type (ftp:). Use an http(s) URL or a local file."),
+    DaemonError(1011, "mpv is not installed. Install it with: brew install mpv"),
+    DaemonError(1014, "Could not fetch the album page."),
+])
+def test_a_failed_post_shows_the_error_and_goes_back_to_the_menu(daemon, error):
+    daemon.catalog["bad"] = error
+    seen = {}
+
+    async def script(pilot, app):
+        await post_url(pilot, app, "bad")
+        await until(pilot, on(app, "ErrorModal"))
+        seen["error"] = app.screen.message
+        await pilot.press("enter")
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("q")
+
+    assert session(script)[0] is None
+    assert seen["error"] == error.message
+
+
+def test_an_unreachable_daemon_at_start_explains_and_exits(monkeypatch):
+    def connect(spawn):
+        raise DaemonUnavailable("The tunetape daemon failed to start (exit status 1).")
+
+    monkeypatch.setattr(main, "_link", main._DaemonLink(connect))
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "ErrorModal"))
+        seen["error"] = app.screen.message
+        await pilot.press("enter")
+
+    assert session(script)[0] is None
+    assert seen["error"].startswith("The tunetape daemon failed to start (exit status 1).")
+    assert client_mod.log_path() in seen["error"]
+    assert client_mod.log_path().endswith("daemon.log")
+
+
+def test_the_daemon_going_away_mid_session_explains_and_reconnects(monkeypatch):
+    clients = [album_client(frozen=True), FakeClient(frozen=True)]
+    monkeypatch.setattr(main, "_link", main._DaemonLink(lambda spawn: clients.pop(0)))
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await until(pilot, lambda: now_row(app) is not None)
+        await pilot.press("n")
+        await until(pilot, on(app, "PlayerScreen"))
+        main._link.get().down = True  # the daemon crashed
+        await until(pilot, on(app, "ErrorModal"))
+        seen["error"] = app.screen.message
+        await pilot.press("enter")
+        await until(pilot, on(app, "MenuScreen"))
+        await post_url(pilot, app, "https://youtu.be/abc")  # a new daemon
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("q")
+
+    assert session(script)[0] is None
+    assert "lost" in seen["error"] and client_mod.log_path() in seen["error"]
+    assert clients == []
+
+
+HISTORY = [
+    {"type": "youtube", "url": "u1", "title": "One", "play_count": 2,
+     "last_played": datetime.now(timezone.utc).isoformat()},
+    {"type": "khinsider", "url": "u2", "title": "Two", "track_count": 10, "last_index": 3},
+    {"type": "ai", "url": "ytsearch1:three", "title": "Three"},
+]
+
+
+@pytest.mark.parametrize("names, posted", [
+    (["enter"], ("u1", "One", 0)),
+    (["down", "enter"], ("u2", None, 3)),          # resumes the album
+    (["down", "down", "enter"], ("ytsearch1:three", "Three", 0)),  # keeps the AI title
+])
+def test_history_replays_through_the_daemon(daemon, names, posted):
+    daemon.history_entries = HISTORY
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("2")
+        await until(pilot, on(app, "HistoryScreen"))
+        for name in names:
+            await pilot.press(name)
+        await until(pilot, on(app, "PlayerScreen"))
+        await pilot.press("q")
+
+    session(script)
+    assert daemon.called("play") == [posted]
+
+
+def test_history_delete_stays_local(daemon, monkeypatch):
+    removed = []
+    monkeypatch.setattr(main.history, "remove", removed.append)
+    daemon.history_entries = HISTORY
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("2")
+        await until(pilot, on(app, "HistoryScreen"))
+        await pilot.press("down", "d")
+        await pilot.pause(0.2)
+        await pilot.press("q")
+
+    session(script)
+    assert removed == ["u2"]
+
+
+def _ai_ready(monkeypatch):
+    monkeypatch.setattr(main.ai, "is_configured", lambda: True)
+    monkeypatch.setattr(main.ai, "is_verified", lambda: True)
+
+
+def test_discover_asks_the_daemon_and_plays_a_pick(daemon, monkeypatch):
+    _ai_ready(monkeypatch)
+    daemon.suggestions = [{"title": "Song A", "input": "ytsearch1:a"},
+                          {"title": "Song B", "input": "ytsearch1:b"}]
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("3")
+        await until(pilot, on(app, "PromptScreen"))
+        await pilot.press(*"vibes", "enter")
+        await until(pilot, on(app, "SuggestionsScreen"))
+        await pilot.press("down", "enter")
+        await until(pilot, on(app, "PlayerScreen"))
+        seen["title"] = text(app, "#title")
+        await pilot.press("b")  # back to the picks; the song plays on
+        await until(pilot, on(app, "SuggestionsScreen"))
+        seen["state"] = daemon.state
+        await pilot.press("q")
+
+    session(script)
+    assert daemon.called("discover") == [("vibes",)]
+    assert daemon.called("play") == [("ytsearch1:b", "Song B", 0)]
+    assert seen == {"title": "Song B", "state": "playing"}
+
+
+@pytest.mark.parametrize("error, screen", [
+    (DaemonError(1020, "AI discovery isn't set up yet."), "NoticeScreen"),
+    (DaemonError(1021, "The AI request failed: timeout"), "ErrorModal"),
+])
+def test_discover_errors(daemon, monkeypatch, error, screen):
+    _ai_ready(monkeypatch)
+    daemon.suggestions = error
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("3")
+        await until(pilot, on(app, "PromptScreen"))
+        await pilot.press(*"vibes", "enter")
+        await until(pilot, on(app, screen))
+        seen["screen"] = screen
+        await pilot.press("ctrl+c")
+
+    session(script)
+    assert seen == {"screen": screen}
+
+
+def test_debug_shows_the_daemon_log(daemon):
+    debug.clear()
+    debug.log("from the window")
+    daemon.log_entries = [{"time": "2026-10-23T14:02:11Z", "level": "INFO",
+                           "message": "Now playing: from the daemon"}]
+    seen = {}
+
+    async def script(pilot, app):
+        await until(pilot, on(app, "MenuScreen"))
+        await pilot.press("d")
+        await until(pilot, on(app, "DebugScreen"))
+        seen["log"] = str(app.screen.log_text)
+        await pilot.press("q")
+
+    session(script, (60, 24))
+    log = seen["log"]
+    assert log.index("this window") < log.index("from the window") < log.index("\ndaemon ")
+    assert "tunetape/demo" in log and "Now playing: from the daemon" in log
+
+
+# --- __main__ against the real daemon ------------------------------------------
+
+@needs_fake_mpv
+def test_end_to_end_with_the_real_daemon(data_dir, audio, monkeypatch):
+    """The real session, the real daemon (spawned on demand), the fake mpv."""
+    monkeypatch.setattr(main, "_link", main._DaemonLink())
+    song = audio("e2e-fake-dur-30.mp3")
+    seen = {}
+
+    async def script(pilot, app):
+        await post_url(pilot, app, song)
+        await until(pilot, on(app, "PlayerScreen"), timeout=20)
+        await until(pilot, lambda: app.screen.status.get("state") == "playing", timeout=20)
+        await until(pilot, lambda: text(app, "#elapsed") != "00:00", timeout=10)
+        seen["title"] = text(app, "#title")
+        seen["status"] = text(app, "#status")
+        info = client_mod.read_discovery()
+        seen["pid"] = info and info.get("pid")
+        await pilot.press("q")
+
+    try:
+        result, _ = session(script)
+        assert result is None
+        assert seen["title"] == "e2e-fake-dur-30" and seen["status"] == "▶ playing"
+        with client_mod.Client.connect(spawn=False) as c:
+            assert c.status()["state"] == "idle"  # q stopped it
+            entries = c.history()["entries"]
+        assert entries and entries[0]["type"] == "file" and entries[0]["url"] == song
+    finally:
+        try:
+            with client_mod.Client.connect(spawn=False, timeout=2) as c:
+                c.shutdown()
+        except DaemonError:
+            pass
+        pid = seen.get("pid")
+        deadline = time.monotonic() + 10
+        while pid and pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+    assert not (pid and pid_alive(pid)), "the daemon was left running"

@@ -1,14 +1,21 @@
+"""``tunetape``: the commands, and the interactive session.
+
+The session flow below (menu → post → player → back to the menu) is plain
+blocking code on the UI's flow thread (see tunetape/ui.py). It plays nothing
+itself: the daemon (docs/protocol.md) owns the queue, mpv, the resolvers and
+the listening history, and this is one of its clients. So leaving the player
+leaves the music playing; quitting stops it.
+"""
+
 import atexit
 import signal
 import sys
+import threading
+import time
 
-from tunetape import __version__, ai, config, debug, history, spotify
-from tunetape.player import (
-    MPVController, check_dependencies, get_stream_info, resolve_with_ytdlp,
-    is_youtube_url, is_youtube_playlist_url, fetch_youtube_playlist,
-)
-from tunetape.khinsider import fetch_album, resolve_track_url, is_khinsider_url
-from tunetape.playlist import Playlist
+from tunetape import __version__, ai, config, history, sources
+from tunetape.client import Client, DaemonError, DaemonUnavailable, log_path
+from tunetape.models import Track
 from tunetape.ui import (
     confirm, main_menu, play, prompt_discover, prompt_url, restore_terminal_state,
     run_session, save_terminal_state, show_ai_results, show_ai_settings,
@@ -16,300 +23,129 @@ from tunetape.ui import (
     show_settings, show_theme_picker, verify_ai_connection, with_spinner,
 )
 
-_active_controller = None
+ERR_AI_NOT_CONFIGURED = 1020
 
-# Source labels for the player's top bar, by history entry type.
-_SOURCE_NAMES = {"khinsider": "KHInsider", "spotify": "Spotify", "youtube_playlist": "YouTube"}
+# What the busy screen says while the daemon fetches a post, by its kind.
+_FETCHING = {
+    "khinsider": "Fetching album…", "spotify": "Fetching Spotify…",
+    "youtube_playlist": "Fetching playlist…", "search": "Finding audio…",
+}
+_COLLECTION_TYPES = ("khinsider", "spotify", "youtube_playlist")
+
+
+class _DaemonLink:
+    """The session's connection to the daemon: made on first use, again after a drop.
+
+    The flow thread and the menu's now-playing check both use it, hence the lock.
+    """
+
+    def __init__(self, connect=None):
+        self._connect = connect or (lambda spawn: Client.connect(
+            spawn=spawn, name=f"tunetape-tui/{__version__}"))
+        self._lock = threading.Lock()
+        self._client = None
+
+    def get(self, spawn: bool = True):
+        """The live client, connecting (and starting the daemon) if there is none."""
+        with self._lock:
+            if self._client is None:
+                self._client = self._connect(spawn)
+            return self._client
+
+    def drop(self, client=None) -> None:
+        """Forget a connection that failed, so the next ``get`` makes a new one."""
+        with self._lock:
+            if client is not None and client is not self._client:
+                return  # already replaced
+            client, self._client = self._client, None
+        if client is not None:
+            client.close()
+
+    def peek(self):
+        """The daemon's status for the menu, or None. Never starts a daemon."""
+        with self._lock:
+            client = self._client
+        if client is None:
+            return None
+        try:
+            return client.status()
+        except DaemonUnavailable:
+            self.drop(client)
+        except DaemonError:
+            pass
+        return None
+
+    def stop_playback(self, settle: float = 10.0) -> None:
+        """Quitting: stop the music, then hang up. Best effort, never raises.
+
+        The daemon stays up and exits on its own once idle. A post still being
+        fetched would start playing after the stop, so it gets ``settle``
+        seconds to land first.
+        """
+        with self._lock:
+            client, self._client = self._client, None
+        if client is None:
+            return
+        try:
+            deadline = time.monotonic() + settle
+            while time.monotonic() < deadline and any(
+                    r.get("status") in ("pending", "expanding")
+                    for r in client.requests(timeout=2).get("requests", [])):
+                time.sleep(0.1)
+            client.stop(timeout=5)
+        except DaemonError:
+            pass
+        finally:
+            client.close()
+
+
+_link = _DaemonLink()
 
 
 def _cleanup():
-    """Clean up controller and restore terminal. Safe to call multiple times."""
-    global _active_controller
-    if _active_controller is not None:
-        try:
-            _active_controller.quit()
-        except Exception:
-            pass
-        _active_controller = None
+    """Stop playback and restore the terminal. Safe to call multiple times."""
+    _link.stop_playback(settle=2.0)
     restore_terminal_state()
 
 
 def _signal_handler(sig, frame):
     """Handle SIGINT/SIGTERM: restore the terminal and exit; atexit runs _cleanup()."""
-    # [#2] Don't call _cleanup() here — it would acquire the RLock which may deadlock.
-    # Restore terminal state (no locks involved) and exit; the atexit handler
-    # calls _cleanup(), and each MPVController also reaps itself via atexit.
+    # Don't stop playback here: that is socket I/O behind the link's lock, and
+    # a handler can interrupt whatever holds it. Restore the terminal (no locks
+    # involved) and exit; the atexit handler calls _cleanup(), which stops it.
     restore_terminal_state()
     sys.exit(0)
 
 
-def _play_youtube(url: str, normalize: bool) -> str:
-    """Resolve and play a YouTube URL. Returns the player's result ('menu'/'quit')."""
-    global _active_controller
+def _unreachable(error: DaemonError) -> str:
+    """The error modal's text when the daemon can't be reached."""
+    message = str(error)
+    if log_path() not in message:
+        message += f"\n\nCheck {log_path()} for what went wrong."
+    return message
 
-    try:
-        check_dependencies(require_ytdlp=True)
-    except RuntimeError as e:
-        show_error(str(e))
-        return "menu"
 
-    try:
-        info = with_spinner("Fetching stream…", get_stream_info, url)
-    except (ValueError, ConnectionError, RuntimeError) as e:
-        show_error(str(e))
-        return "menu"
+def _listen(text: str, *, title: str = None, start_index: int = 0) -> str:
+    """Post ``text`` to play now and open the player on it. Returns 'menu'/'quit'.
 
-    controller = None
+    The busy screen stays up while the daemon fetches (an album page, a
+    playlist); a link it can't use comes back as an error (1010 unsupported,
+    1011 mpv or yt-dlp missing, 1014 the fetch failed).
+    """
     try:
-        controller = MPVController(
-            info["stream_url"], normalize=normalize, volume=config.get_volume()
-        )
-        _active_controller = controller
-        debug.log(f"Now playing (YouTube): {info['title']}")
-        history.record("youtube", url, info["title"])
-        result = play(info["title"], controller, source="YouTube")
-    except Exception as e:
-        if controller is None:
-            debug.exception("YouTube playback failed to start", e)
-            show_error(f"Could not start player: {e}")
-            return "menu"
+        kind = sources.classify(text)
+    except sources.SourceError:
+        kind = None  # the daemon says why
+    client = _link.get()
+    try:
+        with_spinner(_FETCHING.get(kind, "Fetching stream…"), client.play, text,
+                     title=title, start_index=start_index, wait=True)
+    except DaemonUnavailable:
         raise
-    finally:
-        if controller is not None:
-            # Remember the volume the user left it at before tearing mpv down
-            # (the socket is still live here; after quit() it's gone).
-            config.set_volume(controller.get_volume())
-            controller.quit()
-        _active_controller = None
-
-    return result
-
-
-def _play_search(query: str, normalize: bool, title: str = None) -> str:
-    """Play a single track from a ``ytsearch…`` query. Returns 'menu'/'quit'.
-
-    Used by AI discovery (the model yields search queries, not URLs) and by
-    replay of the resulting ``ai`` history entries. Mirrors _play_youtube but
-    records under the ``ai`` type so the entry re-runs the same search on replay.
-    """
-    global _active_controller
-
-    try:
-        check_dependencies(require_ytdlp=True)
-    except RuntimeError as e:
-        show_error(str(e))
+    except DaemonError as e:
+        show_error(e.message)
         return "menu"
-
-    try:
-        # AI hints are ``ytsearch1:<query>`` strings, not YouTube URLs, so they
-        # go straight to the yt-dlp resolver (which accepts searches) rather than
-        # get_stream_info's URL-only path.
-        info = with_spinner("Finding audio…", resolve_with_ytdlp, query)
-    except (ValueError, ConnectionError, RuntimeError) as e:
-        show_error(str(e))
-        return "menu"
-
-    display = title or info["title"]
-    controller = None
-    try:
-        controller = MPVController(
-            info["stream_url"], normalize=normalize, volume=config.get_volume()
-        )
-        _active_controller = controller
-        debug.log(f"Now playing (AI): {display}")
-        history.record("ai", query, display)
-        result = play(display, controller, source="YouTube")
-    except Exception as e:
-        if controller is None:
-            debug.exception("AI playback failed to start", e)
-            show_error(f"Could not start player: {e}")
-            return "menu"
-        raise
-    finally:
-        if controller is not None:
-            config.set_volume(controller.get_volume())
-            controller.quit()
-        _active_controller = None
-
-    return result
-
-
-def _play_album(album, *, type: str, url: str, normalize: bool,
-                start_index: int, resolve_fn) -> str:
-    """Play an Album as a navigable playlist. Returns 'menu'/'quit'.
-
-    Shared by every multi-track source (KHInsider, Spotify, YouTube playlists).
-    ``resolve_fn(track)`` returns the streamable URL for a track (a per-source
-    lazy resolver); everything else — fail-forward, volume carry-over, resume
-    persistence, Playlist lifecycle — is source-agnostic.
-    """
-    global _active_controller
-
-    playlist = Playlist(album, start_index=start_index)
-    debug.log(f"Album loaded: {album.title} ({playlist.total_tracks} tracks)")
-    # Record the album once when playback begins (bumps play_count); the resume
-    # position is refreshed per-track via set_last_index without bumping it.
-    history.record(
-        type, url, album.title,
-        track_count=playlist.total_tracks,
-        last_index=playlist.current_index,
-    )
-
-    result = "menu"
-    # Start at the user's last-set volume and carry it across tracks, so a
-    # mid-album adjustment sticks for the rest of the album and the next launch.
-    volume = config.get_volume()
-    # A single dead/unreachable track shouldn't abandon the rest of the album:
-    # fail forward to the next track, but stop after too many failures in a row.
-    consecutive_failures = 0
-    MAX_CONSECUTIVE_FAILURES = 5
-    try:
-        while True:
-            track = playlist.current_track
-            failed = False
-            stream_url = None
-            try:
-                stream_url = with_spinner(
-                    f"Loading track {playlist.track_label}…", resolve_fn, track
-                )
-            except (RuntimeError, OSError) as e:
-                show_error(f"Could not load track: {e}")
-                failed = True
-
-            if not failed:
-                controller = None
-                try:
-                    controller = MPVController(
-                        stream_url, normalize=normalize, volume=volume
-                    )
-                    _active_controller = controller
-                    history.set_last_index(url, playlist.current_index)
-                    playlist_info = {
-                        "index": playlist.current_index,
-                        "track_label": playlist.track_label,
-                        "has_next": playlist.has_next(),
-                        "has_prev": playlist.has_prev(),
-                    }
-                    result = play(
-                        track.name, controller, playlist_info,
-                        source=_SOURCE_NAMES.get(type), subtitle=album.title,
-                        tracks=[t.name for t in album.tracks],
-                    )
-                    consecutive_failures = 0
-                except Exception as e:
-                    if controller is None:
-                        debug.exception("Track playback failed to start", e)
-                        show_error(f"Could not start player: {e}")
-                        failed = True
-                    else:
-                        raise
-                finally:
-                    if controller is not None:
-                        # Carry the latest volume to the next track and persist
-                        # it (socket is still live before quit()).
-                        volume = controller.get_volume()
-                        config.set_volume(volume)
-                        controller.quit()
-                    _active_controller = None
-
-            if failed:
-                consecutive_failures += 1
-                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES or not playlist.has_next():
-                    result = "menu"
-                    break
-                playlist.next()
-                continue
-
-            if result == "next_track" and playlist.has_next():
-                playlist.next()
-            elif result == "prev_track" and playlist.has_prev():
-                playlist.prev()
-            elif result.startswith("jump_track:"):  # picked from the queue
-                playlist.jump(int(result.split(":", 1)[1]))
-            elif result == "quit":
-                break
-            else:
-                break
-    finally:
-        playlist.close()
-
-    return result
-
-
-def _play_khinsider(url: str, normalize: bool, start_index: int = 0) -> str:
-    """Fetch and play a KHInsider album from start_index. Returns 'menu'/'quit'."""
-    try:
-        album = with_spinner("Fetching album…", fetch_album, url)
-    except (ValueError, RuntimeError, OSError) as e:
-        show_error(str(e))
-        return "menu"
-    return _play_album(
-        album, type="khinsider", url=url, normalize=normalize,
-        start_index=start_index, resolve_fn=resolve_track_url,
-    )
-
-
-def _play_spotify(url: str, normalize: bool, start_index: int = 0) -> str:
-    """Fetch and play a Spotify playlist/album/track. Returns 'menu'/'quit'.
-
-    Audio for each track is found by searching YouTube, so yt-dlp is required.
-    """
-    try:
-        check_dependencies(require_ytdlp=True)
-    except RuntimeError as e:
-        show_error(str(e))
-        return "menu"
-    try:
-        album = with_spinner("Fetching Spotify…", spotify.fetch_spotify, url)
-    except (ValueError, RuntimeError, OSError) as e:
-        show_error(str(e))
-        return "menu"
-    return _play_album(
-        album, type="spotify", url=url, normalize=normalize,
-        start_index=start_index, resolve_fn=spotify.resolve_track_url,
-    )
-
-
-def _play_youtube_playlist(url: str, normalize: bool, start_index: int = 0) -> str:
-    """Fetch and play a YouTube playlist. Returns 'menu'/'quit'."""
-    try:
-        check_dependencies(require_ytdlp=True)
-    except RuntimeError as e:
-        show_error(str(e))
-        return "menu"
-    try:
-        album = with_spinner("Fetching playlist…", fetch_youtube_playlist, url)
-    except (ValueError, RuntimeError, OSError) as e:
-        show_error(str(e))
-        return "menu"
-    return _play_album(
-        album, type="youtube_playlist", url=url, normalize=normalize,
-        start_index=start_index,
-        resolve_fn=lambda t: get_stream_info(t.resolve_hint)["stream_url"],
-    )
-
-
-def _play_url(url: str, normalize: bool, start_index: int = 0) -> str:
-    """Detect the source from the URL and play it. Returns 'menu'/'quit'.
-
-    Order matters: a YouTube playlist URL also matches a watch URL, so it must
-    be checked before the single-video case.
-    """
-    url = url.strip()
-    # AI-discovered tracks are stored as ytsearch queries, not real URLs;
-    # replaying one just re-runs the search.
-    if url.startswith("ytsearch"):
-        return _play_search(url, normalize)
-    if spotify.is_spotify_url(url):
-        return _play_spotify(url, normalize, start_index)
-    if is_youtube_playlist_url(url):
-        return _play_youtube_playlist(url, normalize, start_index)
-    if is_youtube_url(url):
-        return _play_youtube(url, normalize)
-    if is_khinsider_url(url):
-        return _play_khinsider(url, normalize, start_index)
-    show_error("Unrecognized URL. Paste a YouTube, Spotify, or KHInsider link.")
-    return "menu"
+    return play(client)
 
 
 def _resume(entry: dict) -> int:
@@ -321,10 +157,10 @@ def _resume(entry: dict) -> int:
     return resume
 
 
-def _recently_played(normalize: bool) -> str:
+def _recently_played() -> str:
     """Show the history menu and replay a selection. Returns 'menu'/'quit'."""
     while True:
-        entries = history.load()
+        entries = _link.get().history().get("entries", [])
         if not entries:
             show_error("No listening history yet.")
             return "menu"
@@ -336,6 +172,7 @@ def _recently_played(normalize: bool) -> str:
         elif action == "quit":
             return "quit"
         elif action == "delete":
+            # The daemon only ever appends to history; removing is ours to do.
             if payload:
                 history.remove(payload)
             continue
@@ -345,19 +182,18 @@ def _recently_played(normalize: bool) -> str:
             continue
         elif action == "play":
             entry = payload
-            etype = entry.get("type")
-            if etype == "ai_search":
+            if entry.get("type") == "ai_search":
                 # A saved vibe: re-run discovery for a fresh suggestion list
                 # instead of playing a single track.
-                result = _discover(normalize, initial_request=entry["url"])
-            elif etype == "ai":
-                # A played suggestion: re-search but keep the original title so
-                # the entry isn't renamed to yt-dlp's raw video title on replay.
-                result = _play_search(entry["url"], normalize, entry.get("title"))
+                result = _discover(initial_request=entry["url"])
+            elif entry.get("type") in _COLLECTION_TYPES:
+                # Resume where the user left off; the album keeps the title its
+                # page has now.
+                result = _listen(entry["url"], start_index=_resume(entry))
             else:
-                # Re-detect the source from the stored URL (deterministic) and
-                # resume where the user left off for multi-track collections.
-                result = _play_url(entry["url"], normalize, start_index=_resume(entry))
+                # Keep the stored title, so an AI pick isn't renamed to
+                # yt-dlp's raw video title on replay.
+                result = _listen(entry["url"], title=entry.get("title"))
             return "quit" if result == "quit" else "menu"
 
 
@@ -394,20 +230,35 @@ def _ai_preflight() -> str:
         return "menu"
 
 
-def _discover_request(request: str, normalize: bool) -> str:
-    """Fetch AI suggestions for ``request``, remember it, and run the results loop.
+def _discover_request(request: str) -> str:
+    """Ask the daemon for suggestions for ``request`` and run the results loop.
 
-    Records the request itself as an ``ai_search`` history entry once it yields
-    suggestions, so the vibe can be re-run later from Recently played. Returns
-    'menu' (leave Discover), 'research' (user wants a fresh prompt), or 'quit'.
+    The daemon records the request as an ``ai_search`` history entry, so the
+    vibe can be re-run later from Recently played. Returns 'menu' (leave
+    Discover), 'research' (user wants a fresh prompt), or 'quit'.
     """
-    try:
-        tracks = with_spinner("Asking the AI…", ai.suggest_tracks, request)
-    except (RuntimeError, ConnectionError) as e:
-        show_error(str(e))
-        return "research"  # let the user rephrase
-    # A vibe that produced suggestions is worth remembering; replay re-searches.
-    history.record("ai_search", request, request)
+    while True:
+        try:
+            found = with_spinner("Asking the AI…", _link.get().discover, request)
+        except DaemonUnavailable:
+            raise
+        except DaemonError as e:
+            if e.code != ERR_AI_NOT_CONFIGURED:
+                show_error(e.message)
+                return "research"  # let the user rephrase
+            # Set up here but not for the daemon (say, a key only in this
+            # shell's environment): same way out as the pre-flight.
+            action = show_ai_unavailable(e.message)
+            if action == "quit":
+                return "quit"
+            if action != "s":
+                return "menu"
+            if show_ai_settings() == "quit":
+                return "quit"
+            continue  # ask again with the saved settings
+        break
+    tracks = [Track(name=t.get("title") or t.get("input", ""), resolve_hint=t.get("input", ""))
+              for t in found.get("tracks", [])]
 
     while True:
         action, payload = show_ai_results(request, tracks)
@@ -418,12 +269,12 @@ def _discover_request(request: str, normalize: bool) -> str:
         if action == "research":
             return "research"
         if action == "play":
-            if _play_search(payload.resolve_hint, normalize, payload.name) == "quit":
+            if _listen(payload.resolve_hint, title=payload.name) == "quit":
                 return "quit"
             # Return to the suggestion list so the user can keep exploring.
 
 
-def _discover(normalize: bool, initial_request: str = None) -> str:
+def _discover(initial_request: str = None) -> str:
     """AI discovery: describe a vibe, pick from suggestions, play. Returns 'menu'/'quit'.
 
     ``initial_request`` seeds the first round from a replayed ``ai_search`` entry,
@@ -443,7 +294,7 @@ def _discover(normalize: bool, initial_request: str = None) -> str:
             if cmd in ("", "b"):
                 return "menu"
 
-        result = _discover_request(request, normalize)
+        result = _discover_request(request)
         if result == "quit":
             return "quit"
         if result == "menu":
@@ -452,7 +303,11 @@ def _discover(normalize: bool, initial_request: str = None) -> str:
 
 
 def _settings_menu() -> str:
-    """Show the settings screen and persist toggles. Returns 'menu'/'quit'."""
+    """Show the settings screen and persist toggles. Returns 'menu'/'quit'.
+
+    Settings stay in config.json on this side; the daemon reads them each
+    time a track starts.
+    """
     while True:
         normalize = bool(config.get_setting("normalize_volume"))
         choice = show_settings(normalize)
@@ -470,44 +325,77 @@ def _settings_menu() -> str:
                 return "quit"
 
 
+def _daemon_log():
+    """(heading, entries) for the Debug screen's daemon section."""
+    client = _link.get()
+    hello = client.hello or {}
+    heading = " · ".join(str(part) for part in (
+        hello.get("server"), f"pid {hello['pid']}" if hello.get("pid") else None) if part)
+    return heading, client.log().get("entries", [])
+
+
+def _play_url() -> str:
+    url = prompt_url()
+    cmd = url.strip().lower()
+    if cmd == "q":
+        return "quit"
+    if cmd in ("", "b"):
+        return "menu"  # empty / back -> return to menu
+    return _listen(url.strip())
+
+
+_MENU = {
+    "1": _play_url,
+    "2": _recently_played,
+    "3": _discover,
+    "4": _settings_menu,
+    "n": lambda: play(_link.get()),  # back to the player on what's playing
+    "h": show_help,
+    "d": lambda: show_debug(_daemon_log),
+}
+
+
+def _connect() -> bool:
+    """Reach the daemon, starting it if it isn't running. False after explaining why not."""
+    try:
+        try:
+            _link.get(spawn=False)
+        except DaemonUnavailable:
+            with_spinner("Starting the tunetape daemon…", _link.get)
+    except DaemonUnavailable as e:
+        show_error(_unreachable(e))
+        return False
+    except DaemonError as e:  # 1002: a daemon that speaks another protocol
+        show_error(e.message)
+        return False
+    return True
+
+
 def _session():
     """The whole interactive session; runs on the UI's flow thread."""
     try:
-        check_dependencies(require_ytdlp=False)
-    except RuntimeError as e:
-        show_error(str(e))
-        return
-
-    while True:
-        normalize = bool(config.get_setting("normalize_volume"))
-        choice = main_menu()
-
-        if choice == "q":
-            break
-        elif choice == "1":
-            url = prompt_url()
-            cmd = url.strip().lower()
-            if cmd == "q":
+        if not _connect():
+            return
+        while True:
+            choice = main_menu(_link.peek)
+            if choice == "q":
                 break
-            if cmd in ("", "b"):
-                continue  # empty / back -> return to menu
-            if _play_url(url, normalize) == "quit":
+            action = _MENU.get(choice)
+            if action is None:
+                continue
+            try:
+                result = action()
+            except DaemonUnavailable as e:
+                # The daemon went away (crashed, or `tunetape shutdown`). Say
+                # so; the next thing that needs it starts a new one.
+                _link.drop()
+                show_error(_unreachable(e))
+                continue
+            if result == "quit":
                 break
-        elif choice == "2":
-            if _recently_played(normalize) == "quit":
-                break
-        elif choice == "3":
-            if _discover(normalize) == "quit":
-                break
-        elif choice == "4":
-            if _settings_menu() == "quit":
-                break
-        elif choice == "h":
-            if show_help() == "quit":
-                break
-        elif choice == "d":
-            if show_debug() == "quit":
-                break
+    finally:
+        # q (anywhere), ctrl+c, or the app closing: the music stops with us.
+        _link.stop_playback()
 
 
 def main():

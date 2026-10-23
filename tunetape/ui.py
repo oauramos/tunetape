@@ -1,11 +1,12 @@
 """tunetape's interface: one Textual app for the whole session.
 
-The session flow in ``__main__`` (menu → fetch → play → back to the menu) is
-plain blocking code. ``run_session`` starts the Textual app on the main thread
-and runs that flow on a worker thread; each function below shows a screen and
-blocks the flow until the screen answers, returning what the old Rich prompt
-of the same name returned. Slow work (yt-dlp, the AI) runs on the flow thread
-while the app keeps animating.
+The session flow in ``__main__`` (menu → post to the daemon → player → back
+to the menu) is plain blocking code. ``run_session`` starts the Textual app on
+the main thread and runs that flow on a worker thread; each function below
+shows a screen and blocks the flow until the screen answers, returning what
+the old Rich prompt of the same name returned. Slow calls (a post the daemon
+is still fetching, the AI) run on the flow thread while the app keeps
+animating.
 """
 
 import os
@@ -86,10 +87,18 @@ Screen.-compact .card { padding: 0 1; }
 /* --- menu and waiting -------------------------------------------------- */
 #home { height: 1fr; align: center middle; padding: 0 2; }
 #welcome { width: 1fr; text-align: center; margin-bottom: 1; }
+#menu-now { margin-bottom: 1; }
 #ascii-tuna { display: none; }
-MenuScreen.-ascii-width.-ascii-height #ascii-tuna { display: block; }
+MenuScreen.-ascii-width.-ascii-height #ascii-tuna,
+MenuScreen.-ascii-width.-ascii-tall #ascii-tuna { display: block; }
 MenuScreen.-ascii-width.-ascii-height Tuna,
-MenuScreen.-ascii-width.-ascii-height #welcome { display: none; }
+MenuScreen.-ascii-width.-ascii-height #welcome,
+MenuScreen.-ascii-width.-ascii-tall Tuna,
+MenuScreen.-ascii-width.-ascii-tall #welcome { display: none; }
+/* The now-playing row takes two rows the ASCII tuna only has when -ascii-tall. */
+MenuScreen.-now.-ascii-width.-ascii-height #ascii-tuna { display: none; }
+MenuScreen.-now.-ascii-width.-ascii-height Tuna,
+MenuScreen.-now.-ascii-width.-ascii-height #welcome { display: block; }
 #busy { width: 64; max-width: 100%; height: auto; padding: 1 2; }
 #busy-bar { width: 100%; margin-top: 1; }
 #busy-bar Bar { width: 1fr; }
@@ -151,7 +160,7 @@ ErrorModal, ConfirmModal, HelpModal, EditModal {
     text-overflow: ellipsis;
 }
 #queue:focus { border: round $primary; }
-PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
+#queue.-single, PlayerScreen.-narrow #queue, PlayerScreen.-compact #queue { display: none; }
 PlayerScreen.-compact #player-body { padding: 0; }
 """
 
@@ -279,7 +288,7 @@ class TunetapeApp(App):
 
     def _present(self, screen) -> None:
         if screen in self.screen_stack:
-            return  # the player, reused for the next track
+            return  # already up
         if isinstance(screen, ModalScreen):
             self.push_screen(screen)
             return
@@ -329,7 +338,7 @@ def run_session(flow) -> None:
     finally:
         app._session_done.set()
         if app._session_thread is not None:
-            # Give the flow a moment to stop mpv and save the volume.
+            # Give the flow a moment to stop playback in the daemon.
             app._session_thread.join(timeout=3)
         _app = None
     saved = config.get_setting("theme")
@@ -352,9 +361,13 @@ def _notify(message: str, severity: str = "information") -> None:
 
 # --- menu and prompts ------------------------------------------------------
 
-def main_menu() -> str:
-    """The main menu. Returns '1'-'4', 'h', 'd' or 'q'."""
-    return _ask(MenuScreen)
+def main_menu(now_playing=None) -> str:
+    """The main menu. Returns '1'-'4', 'h', 'd', 'q', or 'n' (back to the player).
+
+    ``now_playing()`` returns the daemon's status, or None when there is no
+    daemon to ask; while it says something is playing the menu offers 'n'.
+    """
+    return _ask(lambda: MenuScreen(now_playing))
 
 
 def _detect_source(text: str) -> Content:
@@ -683,8 +696,46 @@ def show_help() -> Optional[str]:
     return _ask(HelpModal)
 
 
-def show_debug() -> Optional[str]:
-    """The Debug/Logs viewer. Returns 'quit' to quit, else None (back)."""
+def _log_line(ts: datetime, level: str, msg: str) -> Content:
+    color = {"ERROR": "$error", "WARN": "$warning", "WARNING": "$warning"}.get(
+        level, "$foreground 50%")
+    try:
+        stamp = ts.astimezone().strftime("%H:%M:%S")
+    except (ValueError, OSError, AttributeError):
+        stamp = "--:--:--"
+    return Content.from_markup(
+        f"[$foreground 50%]$stamp[/] [{color}]$level[/] $msg",
+        stamp=stamp, level=f"{level:<5}", msg=msg,
+    )
+
+
+def _daemon_records(entries: list) -> list:
+    """``daemon.log`` entries (protocol §4.5) as (time, level, message) records."""
+    records = []
+    for entry in entries:
+        try:
+            ts = datetime.strptime(str(entry.get("time")), "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc)
+        except ValueError:
+            ts = None
+        records.append((ts, str(entry.get("level") or "INFO").upper(),
+                        str(entry.get("message", ""))))
+    return records
+
+
+def _hint(text: str) -> Content:
+    return Content.from_markup("[$foreground 50%]$t[/]", t=text)
+
+
+def show_debug(daemon_log=None) -> Optional[str]:
+    """The Debug/Logs viewer. Returns 'quit' to quit, else None (back).
+
+    Two logs, one after the other: this window's, then the daemon's, which
+    does the playing and so has most of the story. ``daemon_log()`` returns
+    (a heading such as 'tunetape/0.10.0 · pid 4123', the ``daemon.log``
+    entries), or raises DaemonError when the daemon can't be asked.
+    """
+    from tunetape.client import DaemonError, log_path
     from tunetape.player import tool_command
 
     while True:
@@ -697,20 +748,29 @@ def show_debug() -> Optional[str]:
             "[$foreground 60%]data dir[/] $dir",
             v=__version__, dir=paths.data_dir(),
         )
-        lines = []
-        for ts, level, msg in debug.entries()[-200:]:
-            color = {"ERROR": "$error", "WARN": "$warning", "WARNING": "$warning"}.get(
-                level, "$foreground 50%")
+        lines = [Content.from_markup("[b $primary]this window[/]")]
+        own = debug.entries()[-200:]
+        lines.extend(_log_line(*record) for record in own)
+        if not own:
+            lines.append(_hint("No events logged yet this session."))
+        if daemon_log is not None:
+            lines.append(Content(""))
             try:
-                stamp = ts.astimezone().strftime("%H:%M:%S")
-            except (ValueError, OSError):
-                stamp = "--:--:--"
+                heading, entries = daemon_log()
+            except DaemonError as e:
+                heading, entries, failure = "", [], str(e)
+            else:
+                failure = None
             lines.append(Content.from_markup(
-                f"[$foreground 50%]$stamp[/] [{color}]$level[/] $msg",
-                stamp=stamp, level=f"{level:<5}", msg=msg,
-            ))
-        log = Content("\n").join(lines) if lines else Content.from_markup(
-            "[$foreground 50%]No events logged yet this session.[/]")
+                "[b $primary]daemon[/] [$foreground 50%]$h[/]", h=heading))
+            lines.append(_hint(log_path()))
+            records = _daemon_records(entries)
+            lines.extend(_log_line(*record) for record in records)
+            if failure:
+                lines.append(_hint(f"Could not read its log: {failure}"))
+            elif not records:
+                lines.append(_hint("Nothing logged yet."))
+        log = Content("\n").join(lines)
         result = _ask(lambda: DebugScreen(about, log))
         if result == "quit":
             return "quit"
@@ -721,22 +781,35 @@ def show_debug() -> Optional[str]:
 
 # --- the player ------------------------------------------------------------
 
-def play(title: str, controller, playlist_info: dict = None, *, source: str = None,
-         subtitle: str = None, tracks: list = None) -> str:
-    """Play on the player screen until the user leaves or the track ends.
+def play(client) -> str:
+    """Show the daemon's queue on the player until the user leaves or it runs out.
 
-    Returns 'menu', 'quit', 'next_track', 'prev_track' or 'jump_track:<n>'.
-    The next track of the same album reuses the screen already up.
+    Returns 'menu' (b, or nothing left to play: the music, if any, keeps
+    going) or 'quit'. A failure that stopped playback is shown before it
+    returns; a daemon that went away raises DaemonUnavailable.
     """
-    def build():
-        top = _app.flow_screen
-        if isinstance(top, PlayerScreen) and tracks and top.tracks == tracks:
-            top.load(title, controller, playlist_info)
-            return top
-        return PlayerScreen(title, controller, playlist_info, source=source,
-                            subtitle=subtitle, tracks=tracks)
+    from tunetape.client import DaemonUnavailable
 
-    return _ask(build)
+    status = client.status()
+    if status.get("state") == "idle":
+        if status.get("message"):
+            show_error(status["message"])  # it failed before the player was up
+        return "menu"
+    items = client.queue().get("items", [])
+    shown = []
+
+    def build():
+        screen = PlayerScreen(client, status, items)
+        shown.append(screen)
+        return screen
+
+    result = _ask(build)
+    screen = shown[0]
+    if screen.lost is not None:
+        raise DaemonUnavailable(screen.lost)
+    if screen.notice:
+        show_error(screen.notice)
+    return "quit" if result == "quit" else "menu"
 
 
 __all__ = [
