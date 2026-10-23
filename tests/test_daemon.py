@@ -371,6 +371,26 @@ def test_parallel_spawns_end_up_with_one_daemon(data_dir):
             c.close()
         if pid:
             wait_for(lambda: not pid_alive(pid), 10)
+        _stop_late_losers()
+
+
+def _stop_late_losers(settle=3.0):
+    """Shut down a spawned loser that got the lock after the winner exited.
+
+    A loser that never saw the winner answer (the winner lived only a moment)
+    takes over once the lock is free, as it would after a real shutdown; it
+    would then idle out after 600 s. Don't leave it running past the test.
+    """
+    deadline = time.monotonic() + settle
+    while time.monotonic() < deadline:
+        try:
+            with Client.connect(spawn=False, timeout=2) as c:
+                late = c.hello["pid"]
+                c.shutdown()
+            wait_for(lambda: not pid_alive(late), 10)
+        except DaemonError:
+            pass
+        time.sleep(0.1)
 
 
 def test_call_timeout(data_dir):
