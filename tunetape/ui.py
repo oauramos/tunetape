@@ -86,10 +86,18 @@ Screen.-compact .card { padding: 0 1; }
 /* --- menu and waiting -------------------------------------------------- */
 #home { height: 1fr; align: center middle; padding: 0 2; }
 #welcome { width: 1fr; text-align: center; margin-bottom: 1; }
+#menu-now { margin-bottom: 1; }
 #ascii-tuna { display: none; }
-MenuScreen.-ascii-width.-ascii-height #ascii-tuna { display: block; }
+MenuScreen.-ascii-width.-ascii-height #ascii-tuna,
+MenuScreen.-ascii-width.-ascii-tall #ascii-tuna { display: block; }
 MenuScreen.-ascii-width.-ascii-height Tuna,
-MenuScreen.-ascii-width.-ascii-height #welcome { display: none; }
+MenuScreen.-ascii-width.-ascii-height #welcome,
+MenuScreen.-ascii-width.-ascii-tall Tuna,
+MenuScreen.-ascii-width.-ascii-tall #welcome { display: none; }
+/* The now-playing row takes two rows the ASCII tuna only has when -ascii-tall. */
+MenuScreen.-now.-ascii-width.-ascii-height #ascii-tuna { display: none; }
+MenuScreen.-now.-ascii-width.-ascii-height Tuna,
+MenuScreen.-now.-ascii-width.-ascii-height #welcome { display: block; }
 #busy { width: 64; max-width: 100%; height: auto; padding: 1 2; }
 #busy-bar { width: 100%; margin-top: 1; }
 #busy-bar Bar { width: 1fr; }
@@ -352,9 +360,13 @@ def _notify(message: str, severity: str = "information") -> None:
 
 # --- menu and prompts ------------------------------------------------------
 
-def main_menu() -> str:
-    """The main menu. Returns '1'-'4', 'h', 'd' or 'q'."""
-    return _ask(MenuScreen)
+def main_menu(now_playing=None) -> str:
+    """The main menu. Returns '1'-'4', 'h', 'd', 'q', or 'n' (back to the player).
+
+    ``now_playing()`` returns the daemon's status, or None when there is no
+    daemon to ask; while it says something is playing the menu offers 'n'.
+    """
+    return _ask(lambda: MenuScreen(now_playing))
 
 
 def _detect_source(text: str) -> Content:
