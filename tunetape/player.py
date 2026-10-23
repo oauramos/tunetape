@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -85,6 +86,40 @@ def find_executable(name):
     return found
 
 
+# A command line that stands in for the real tool (docs/architecture.md, "Test
+# seams"): the test suite points TUNETAPE_MPV at a fake mpv that needs no audio
+# device, and TUNETAPE_YTDLP at a fake yt-dlp that needs no network.
+_TOOL_OVERRIDES = {"mpv": "TUNETAPE_MPV", "yt-dlp": "TUNETAPE_YTDLP"}
+
+
+def _split_command(text: str) -> list:
+    if sys.platform != "win32":
+        return shlex.split(text)
+    # Non-POSIX mode keeps the quotes around "C:\Program Files\…" tokens, which
+    # CreateProcess would then look for literally.
+    return [tok[1:-1] if len(tok) > 1 and tok[0] == tok[-1] == '"' else tok
+            for tok in shlex.split(text, posix=False)]
+
+
+def tool_command(name: str):
+    """The argv prefix that runs ``name`` ("mpv" or "yt-dlp"), or None if missing.
+
+    ``$TUNETAPE_MPV`` / ``$TUNETAPE_YTDLP`` override the executable lookup with
+    a whole command line; an override always counts as present.
+    """
+    env = _TOOL_OVERRIDES.get(name)
+    override = os.environ.get(env, "").strip() if env else ""
+    if override:
+        return _split_command(override)
+    exe = find_executable(name)
+    return [exe] if exe else None
+
+
+def _tool_argv(name: str) -> list:
+    """Like tool_command, but falls back to the bare name so the OS reports it."""
+    return tool_command(name) or [name]
+
+
 def _install_hint(pkg: str) -> str:
     """Platform-appropriate one-liner for installing a missing dependency."""
     if sys.platform == "win32":
@@ -96,9 +131,9 @@ def _install_hint(pkg: str) -> str:
 
 def check_dependencies(require_ytdlp: bool = True):
     """Verify mpv (always) and yt-dlp (when required) exist in PATH."""
-    if not find_executable("mpv"):
+    if not tool_command("mpv"):
         raise RuntimeError(f"mpv is not installed. {_install_hint('mpv')}")
-    if require_ytdlp and not find_executable("yt-dlp"):
+    if require_ytdlp and not tool_command("yt-dlp"):
         raise RuntimeError(f"yt-dlp is not installed. {_install_hint('yt-dlp')}")
 
 
@@ -168,7 +203,7 @@ def resolve_with_ytdlp(arg: str) -> dict:
     """
     try:
         result = subprocess.run(
-            [find_executable("yt-dlp") or "yt-dlp",
+            [*_tool_argv("yt-dlp"),
              "-f", "bestaudio", *_ytdlp_client_args(),
              "--get-url", "--get-title", arg],
             capture_output=True,
@@ -244,7 +279,7 @@ def fetch_youtube_playlist(url: str) -> Album:
 
     try:
         result = subprocess.run(
-            [find_executable("yt-dlp") or "yt-dlp", "--flat-playlist", "--no-warnings",
+            [*_tool_argv("yt-dlp"), "--flat-playlist", "--no-warnings",
              "--print", "%(id)s|%(title)s", url],
             capture_output=True,
             text=True,
@@ -316,7 +351,7 @@ class MPVController:
         self._ipc.reset()
 
         args = [
-            find_executable("mpv") or "mpv",
+            *_tool_argv("mpv"),
             "--no-video",
             # --no-terminal would silence mpv completely, including the load
             # errors we want captured. --no-input-terminal keeps it from
@@ -363,8 +398,9 @@ class MPVController:
         # and unregisters itself, so this never accumulates or double-reaps.
         atexit.register(self.quit)
 
-        # Wait (up to 5s) for mpv to create its IPC endpoint, then connect.
-        if self._ipc.connect(5.0):
+        # Wait (up to 5s) for mpv to create its IPC endpoint, then connect. An
+        # mpv that has already exited never will, so stop waiting at once.
+        if self._ipc.connect(5.0, alive=lambda: self._proc.poll() is None):
             return True
 
         # [#10] Reap zombie on this attempt's failure
@@ -462,14 +498,31 @@ class MPVController:
     def toggle_pause(self):
         self._send(["cycle", "pause"])
 
-    def seek(self, seconds: float):
-        self._send(["seek", str(seconds), "relative"])
+    def set_pause(self, paused: bool):
+        self._send(["set_property", "pause", bool(paused)])
+
+    def seek(self, seconds: float, relative: bool = True):
+        self._send(["seek", str(seconds), "relative" if relative else "absolute"])
 
     def set_volume_relative(self, delta: float):
         self._send(["add", "volume", str(delta)])
 
+    def set_volume(self, value: float):
+        resp = self._send(["set_property", "volume", float(value)])
+        if resp.get("error") == "success":
+            self._last_volume = float(value)
+
     def toggle_mute(self):
         self._send(["cycle", "mute"])
+
+    def set_mute(self, muted: bool):
+        resp = self._send(["set_property", "mute", bool(muted)])
+        if resp.get("error") == "success":
+            self._last_muted = bool(muted)
+
+    def exit_code(self):
+        """mpv's exit status once it has exited, else None."""
+        return None if self._proc is None else self._proc.poll()
 
     def get_volume(self) -> float:
         # mpv replies carry error="success" on success; our own failure dicts
