@@ -49,35 +49,47 @@ def test_commands_work_after_hello(conn):
     assert conn.result("player.status")["state"] in ("idle", "loading", "playing", "paused")
 
 
-def _require_transport(daemon, transport):
-    if daemon.discovery()["transport"] != transport:
-        pytest.skip(f"only on the {transport} transport")
+# The tcp transport is Windows' native one; TUNETAPE_DAEMON_TRANSPORT=tcp forces
+# it on POSIX (docs/architecture.md, "Test seams"), so these run everywhere.
 
 
-def test_tcp_hello_without_token_fails_1001(daemon):
-    _require_transport(daemon, "tcp")
-    c = daemon.connect(hello=False)
+def test_tcp_hello_with_token(tcp_daemon, schema):
+    disc = tcp_daemon.discovery()
+    schema.check("/$defs/DiscoveryTcp", disc, "daemon.json")
+    c = tcp_daemon.connect(hello=False)
+    msg = c.hello()
+    assert "result" in msg, msg
+    assert msg["result"]["pid"] == disc["pid"]
+
+
+def test_tcp_hello_without_token_fails_1001(tcp_daemon):
+    c = tcp_daemon.connect(hello=False)
     msg = c.hello(token=None)
     assert msg.get("error", {}).get("code") == 1001, msg
 
 
-def test_tcp_hello_with_wrong_token_fails_1001(daemon):
-    _require_transport(daemon, "tcp")
-    c = daemon.connect(hello=False)
+def test_tcp_hello_with_wrong_token_fails_1001(tcp_daemon):
+    c = tcp_daemon.connect(hello=False)
     msg = c.hello(token="B" * 43)
     assert msg.get("error", {}).get("code") == 1001, msg
 
 
-def test_tcp_failed_hello_does_not_authenticate(daemon):
-    _require_transport(daemon, "tcp")
-    c = daemon.connect(hello=False)
+def test_tcp_failed_hello_does_not_authenticate(tcp_daemon):
+    c = tcp_daemon.connect(hello=False)
     c.hello(token="B" * 43)
     if not c.closed_by_daemon(1):
         c.error("player.status", code=1001)
 
 
+def test_tcp_commands_work_after_hello(tcp_daemon):
+    c = tcp_daemon.connect()
+    assert c.result("daemon.info")["pid"] == tcp_daemon.discovery()["pid"]
+    assert c.result("player.status")["state"] == "idle"
+
+
 def test_unix_ignores_token(daemon):
-    _require_transport(daemon, "unix")
+    if daemon.discovery()["transport"] != "unix":
+        pytest.skip("only on the unix transport")
     c = daemon.connect(hello=False)
     msg = c.hello(token="not-a-real-token")
     assert "result" in msg, msg

@@ -1,5 +1,6 @@
 """§1.2 endpoint discovery and §1.4 lifecycle: daemon.json, the socket, single instance."""
 
+import hashlib
 import json
 import os
 import shutil
@@ -52,11 +53,74 @@ def test_socket_lives_in_short_data_dir_and_is_private(daemon):
     assert stat.S_IMODE(st.st_mode) == 0o600, oct(stat.S_IMODE(st.st_mode))
 
 
-@pytest.mark.skipif(not WINDOWS, reason="tcp transport is Windows-only")
-def test_tcp_binds_loopback_only(daemon):
-    disc = daemon.discovery()
+def test_tcp_discovery_is_loopback_with_a_token(tcp_daemon, schema):
+    disc = tcp_daemon.discovery()
+    schema.check("/$defs/DiscoveryTcp", disc, "daemon.json")
     assert disc["host"] == "127.0.0.1"
     assert len(disc["token"]) == 43
+    if not WINDOWS:
+        # The file carries the token: it must stay private.
+        assert stat.S_IMODE(os.stat(tcp_daemon.discovery_path).st_mode) == 0o600
+
+
+@posix_only
+def test_long_data_dir_uses_the_hashed_fallback_socket(daemon_factory):
+    d = daemon_factory(long_dir=True)
+    assert len(os.path.join(d.data_dir, "daemon.sock").encode()) >= 100
+    path = d.discovery()["path"]
+    digest = hashlib.sha256(d.data_dir.encode("utf-8")).hexdigest()[:12]
+    assert os.path.basename(path) == f"{digest}.sock"
+    parent = os.path.dirname(path)
+    assert os.path.basename(parent) == f"tunetape-{os.getuid()}"
+    assert stat.S_IMODE(os.stat(parent).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    assert len(path.encode()) < 100
+    assert "result" in d.connect(hello=False).hello()
+
+
+@posix_only
+def test_isolated_long_data_dirs_never_share_a_socket(daemon_factory):
+    a = daemon_factory(long_dir=True)
+    b = daemon_factory(long_dir=True)
+    assert a.discovery()["path"] != b.discovery()["path"]
+    assert a.connect().result("daemon.info")["pid"] == a.discovery()["pid"]
+    assert b.connect().result("daemon.info")["pid"] == b.discovery()["pid"]
+    a.connect().result("daemon.shutdown")
+    a.wait_exit(10)
+    assert b.connect().result("player.status")["state"] == "idle"
+
+
+@posix_only
+def test_daemon_holds_an_os_lock_on_daemon_lock(daemon):
+    import fcntl
+
+    lock = os.path.join(daemon.data_dir, "daemon.lock")
+    assert os.path.exists(lock)
+    with open(lock, "a+") as f:
+        with pytest.raises(OSError):
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_daemons_racing_on_one_data_dir_leave_exactly_one(daemon_factory):
+    first = daemon_factory(wait=False)
+    second = daemon_factory(data_dir=first.data_dir, wait=False)
+    procs = [first.spawn(), second.spawn()]  # as close together as we can
+    first.proc, second.proc = procs
+    try:
+        def one_exited():
+            return [p for p in procs if p.poll() is not None] or None
+
+        exited = wait_for(one_exited, timeout=20, what="one of two racing daemons to exit")
+        assert len(exited) == 1, "exactly one of two racing daemons may keep running"
+        assert exited[0].returncode == 0
+        survivor = procs[1] if exited[0] is procs[0] else procs[0]
+        assert survivor.poll() is None
+        alive = first if survivor is procs[0] else second
+        wait_for(alive._answers, timeout=20, what="the surviving daemon to answer")
+        assert alive.discovery()["pid"] == survivor.pid or not using_default_daemon()
+    finally:
+        for d in (first, second):
+            d.stop()
 
 
 def test_daemon_writes_its_log(daemon):
