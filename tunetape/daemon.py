@@ -312,6 +312,10 @@ class _Connection:
         self._closing = False
         self._aborted = False
         self.done = threading.Event()
+
+    def start(self) -> None:
+        # Separate from __init__ so the server registers the connection first;
+        # otherwise a fast client's daemon.info could count itself out.
         threading.Thread(target=self._read_loop, name="tunetape-conn-reader", daemon=True).start()
         threading.Thread(target=self._write_loop, name="tunetape-conn-writer", daemon=True).start()
 
@@ -584,6 +588,7 @@ class Server:
                 conn = _Connection(self, sock)
                 with self._conns_lock:
                     self._conns.add(conn)
+                conn.start()
             if self.idle_timeout > 0:
                 if self.client_count() == 0 and self.engine.is_idle():
                     idle_since = idle_since or time.monotonic()

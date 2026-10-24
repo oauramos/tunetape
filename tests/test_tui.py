@@ -365,11 +365,13 @@ def test_loading_shows_on_the_status_line():
 
     async def script(pilot, app):
         await until(pilot, on(app, "PlayerScreen"))
-        await pilot.pause(0.2)
+        # Wait for the line rather than a fixed pause: a slow CI runner may
+        # take longer than the pause just to paint the screen.
+        await until(pilot, lambda: "loading" in text(app, "#status"))
         seen["loading"] = text(app, "#status")
         await until(pilot, lambda: "playing" in text(app, "#status"))
 
-    drive(player(album_client(load_seconds=0.8)), script)
+    drive(player(album_client(load_seconds=3.0)), script)
     assert seen["loading"] == "… loading track 12/24"
 
 
