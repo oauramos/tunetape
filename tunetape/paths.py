@@ -14,11 +14,17 @@ import tempfile
 def data_dir() -> str:
     """Return tunetape's data directory.
 
-    On Windows this is ``%LOCALAPPDATA%\\tunetape``. On macOS/Linux it honors
+    ``$TUNETAPE_DATA_DIR`` (an absolute path) wins on every platform: it is how
+    tests and parallel instances keep their daemon, history and settings apart
+    (docs/protocol.md §1.2). On Windows this is ``%LOCALAPPDATA%\\tunetape``. On macOS/Linux it honors
     ``$XDG_DATA_HOME`` (falling back to ``~/.local/share/tunetape``). Per the
     XDG spec, a relative (or empty) XDG_DATA_HOME is ignored so the data dir
     stays stable regardless of the process's working directory.
     """
+    override = os.environ.get("TUNETAPE_DATA_DIR")
+    if override and os.path.isabs(override):
+        return override
+
     if sys.platform == "win32":
         local = os.environ.get("LOCALAPPDATA")
         base = local if local and os.path.isabs(local) else os.path.join(

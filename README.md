@@ -172,7 +172,7 @@ The same keys work on every screen, and each screen's row of buttons ends with t
 | Key | Action |
 |:---:|--------|
 | `b` `esc` | Back |
-| `q` | Quit |
+| `q` | Quit (the music stops too) |
 | `h` `?` | Help: every key, on any screen |
 | `ctrl+c` | Quit, even while typing or loading |
 | `ctrl+p` | Command palette (themes) |
@@ -190,6 +190,7 @@ In the player:
 | `m` | click the button | Mute |
 | `n` `p` | click the button | Next / previous track |
 | `tab` | click a track | Browse the queue; Enter (or the click) plays that track |
+| `b` `esc` | | Back to the menu; the music keeps playing, and **n** on the menu brings the player back |
 
 The full reference is in the wiki: **[Usage and Controls](https://github.com/oauramos/tunetape/wiki/Usage-and-Controls)**.
 
