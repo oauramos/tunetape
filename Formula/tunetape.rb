@@ -17,10 +17,10 @@
 class Tunetape < Formula
   include Language::Python::Virtualenv
 
-  desc "Terminal audio player that streams from YouTube, Spotify, and KHInsider"
+  desc "Terminal music player with a CLI and an MCP server for AI agents"
   homepage "https://github.com/oauramos/tunetape"
-  url "https://github.com/oauramos/tunetape/archive/refs/tags/v0.9.0.tar.gz"
-  sha256 "92f6a7a7083b82cde3f15cf63aa50d6629024ac3b3524912ae9c40d38a172104"
+  url "https://github.com/oauramos/tunetape/archive/refs/tags/v1.0.0.tar.gz"
+  sha256 "01eb8c916ee1acabaeabe00b6845f77c7670674dbf7e50aa16bd00b8629a7393"
   license "MIT"
 
   depends_on "mpv"          # links FFmpeg libraries — provides audio decode + dynaudnorm
@@ -83,5 +83,11 @@ class Tunetape < Formula
 
   test do
     assert_match "tunetape #{version}", shell_output("#{bin}/tunetape --version")
+    # The MCP server answers an initialize without needing the daemon.
+    init = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":' \
+           '{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"brew","version":"1"}}}'
+    ENV["TUNETAPE_DATA_DIR"] = testpath/"data"
+    output = pipe_output("#{bin}/tunetape mcp 2>/dev/null", "#{init}\n")
+    assert_match "\"serverInfo\":{\"name\":\"tunetape\",\"version\":\"#{version}\"}", output
   end
 end
