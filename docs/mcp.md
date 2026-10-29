@@ -13,6 +13,10 @@ SDK) and works on Python 3.9+ on macOS, Linux and Windows.
 
 ## Register it
 
+Press **m** on tunetape's menu: it shows both setups below with the exact path
+of the `tunetape` you are running, copies either one, and when Claude Code's
+`claude` command is on your `PATH` it can run the `claude mcp add` for you.
+
 Claude Code:
 
 ```bash

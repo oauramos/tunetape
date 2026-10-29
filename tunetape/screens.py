@@ -14,6 +14,7 @@ from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, OptionList, ProgressBar, Static
 
@@ -87,7 +88,8 @@ MENU_CAPS = [
     Cap("3", "Discover", "pick('3')"),
     Cap("4", "Settings", "pick('4')"),
 ]
-MENU_NAV = [Cap("d", "debug", "pick('d')"), Cap("h", "help", "pick('h')"), QUIT]
+MENU_NAV = [Cap("m", "mcp", "pick('m')"), Cap("d", "debug", "pick('d')"),
+            Cap("h", "help", "pick('h')"), QUIT]
 
 
 def clip(text: str, width: int) -> str:
@@ -98,7 +100,7 @@ def clip(text: str, width: int) -> str:
 
 
 class MenuScreen(FlowScreen):
-    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'h', 'd', 'q' or 'n'.
+    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'm', 'h', 'd', 'q' or 'n'.
 
     With room for it (the art, the top bar and two rows of boxed caps) the
     welcome is the original ASCII tuna with the title inside; smaller
@@ -124,6 +126,7 @@ class MenuScreen(FlowScreen):
         Binding("n", "pick('n')", show=False),
         Binding("h,question_mark", "pick('h')", show=False),
         Binding("d", "pick('d')", show=False),
+        Binding("m", "pick('m')", show=False),
     ]
 
     def __init__(self, now_playing=None):
@@ -173,10 +176,14 @@ class MenuScreen(FlowScreen):
         self._draw_now()
 
     def _draw_now(self) -> None:
-        row = self.query_one("#menu-now", KeyCaps)
+        try:
+            row = self.query_one("#menu-now", KeyCaps)
+            caps = self.query_one("#menu-caps")
+        except NoMatches:
+            return  # the menu was left while the daemon was asked: its widgets are gone
         if self.now is None:
             if row.has_focus:
-                self.query_one("#menu-caps").focus()
+                caps.focus()
             row.display = False
             return
         current = self.now["current"]
@@ -665,6 +672,7 @@ HELP_SECTIONS = {
         ("3", "Discover: describe a vibe, an AI finds songs"),
         ("4", "Settings: normalization, theme, AI"),
         ("n", "Back to the player, while music plays"),
+        ("m", "Connect an AI agent (MCP)"),
         ("d", "Debug / logs"),
     ],
     "Player": [
@@ -747,3 +755,80 @@ class DebugScreen(FlowScreen):
 
     def action_clear(self) -> None:
         self.answer("c")
+
+
+class McpScreen(FlowScreen):
+    """How to let an AI agent drive tunetape over MCP. Answers 'a' (add it to
+    Claude Code), None (back) or 'quit'; c and j copy without answering."""
+
+    BACK_RESULT = None
+    BINDINGS = [
+        Binding("a", "add", show=False),
+        Binding("c", "copy('command')", show=False),
+        Binding("j", "copy('json')", show=False),
+    ]
+
+    def __init__(self, setup):
+        super().__init__()
+        self.setup = setup  # mcp_setup.Setup
+
+    def compose(self):
+        from tunetape import mcp_setup
+
+        setup = self.setup
+        if setup.registered:
+            status = Content.from_markup("[b $success]✓ added[/] [$foreground 50%]($scope scope)[/]",
+                                         scope=setup.registered)
+        elif setup.claude_found:
+            status = Content.from_markup("[$foreground 60%]press[/] [b $accent]a[/] "
+                                         "[$foreground 60%]to add it for you[/]")
+        else:
+            status = Content.from_markup("[$foreground 50%]claude not found on PATH[/]")
+        heading = "[b $primary]$h[/]"
+        code = "  [b $accent]$c[/]"
+        lines = [
+            Content.from_markup(
+                "tunetape is also an MCP server: Claude Code, Claude Desktop or any MCP "
+                "client can play music, queue links and skip tracks in this player."),
+            Content(""),
+            Content.from_markup(heading + "  ", h="Claude Code") + status,
+            Content.from_markup(code, c=setup.claude_command),
+            Content(""),
+            Content.from_markup(heading, h="Claude Desktop, Cursor and other clients"),
+            Content.from_markup("[$foreground 60%]Add this to the client's MCP config "
+                                "(claude_desktop_config.json for Claude Desktop):[/]"),
+            *(Content.from_markup(code, c=line) for line in setup.config_json.splitlines()),
+            Content(""),
+            Content.from_markup(heading, h="Then ask your agent"),
+            *(Content.from_markup('  [$accent]"$e"[/]', e=e) for e in mcp_setup.EXAMPLES),
+            Content(""),
+            Content.from_markup("[$foreground 50%]Full guide: $d[/]", d=mcp_setup.DOCS),
+        ]
+        yield TopBar("MCP")
+        with Vertical(classes="body"):
+            with card("Connect an AI agent", classes="-fill"):
+                with VerticalScroll(id="mcp"):
+                    yield Static(Content("\n").join(lines))
+                yield KeyCaps([Cap("a", "add to Claude Code", "add"),
+                               Cap("c", "copy command", "copy('command')"),
+                               Cap("j", "copy JSON", "copy('json')"), *NAV])
+
+    def on_mount(self) -> None:
+        self.query_one("#mcp").focus()
+
+    def check_action(self, action: str, parameters: tuple):
+        if action == "add":
+            return self.setup.claude_found and not self.setup.registered
+        return True
+
+    def action_add(self) -> None:
+        self.answer("a")
+
+    def action_copy(self, what: str) -> None:
+        from tunetape import mcp_setup
+
+        text = self.setup.claude_command if what == "command" else self.setup.config_json
+        self.app.copy_to_clipboard(text)
+        mcp_setup.copy(text)
+        self.app.notify("Copied the Claude Code command." if what == "command"
+                        else "Copied the MCP config.")

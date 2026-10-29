@@ -17,6 +17,15 @@ from tunetape.engine import Engine, EngineError
 pytestmark = needs_fake_mpv
 
 
+def latest_history(url):
+    """The newest history entry, once it is ``url``'s. The engine records it
+    just after the state turns "playing", so seeing that isn't enough."""
+    def check():
+        entries = history.load()
+        return entries[0] if entries and entries[0]["url"] == url else None
+    return wait_for(check)
+
+
 def wait_for(predicate, timeout=10.0, interval=0.05):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -150,7 +159,7 @@ def test_title_param_and_search_history(engine):
     wait_for(lambda: state(engine) == "playing")
     s = engine.status()
     assert s["current"]["title"] == "Daft Punk — Around the World"
-    entry = history.load()[0]
+    entry = latest_history("ytsearch1:daft punk around the world")
     assert entry["type"] == "ai"
     assert entry["url"] == "ytsearch1:daft punk around the world"
     assert entry["title"] == "Daft Punk — Around the World"
@@ -169,14 +178,13 @@ def test_history_for_files_and_collections(engine, audio, monkeypatch):
     path = audio("Song-fake-dur-30.mp3")
     engine.add(path)
     wait_for(lambda: state(engine) == "playing")
-    assert history.load()[0]["type"] == "file"
-    assert history.load()[0]["url"] == path
+    assert latest_history(path)["type"] == "file"
 
     url = "https://www.youtube.com/playlist?list=PLfake"
     engine.add(url, at="now", start_index=1, wait=True)
     wait_for(lambda: state(engine) == "playing")
-    entry = history.load()[0]
-    assert entry["type"] == "youtube_playlist" and entry["url"] == url
+    entry = latest_history(url)
+    assert entry["type"] == "youtube_playlist"
     assert entry["track_count"] == 3 and entry["last_index"] == 1
     assert engine.status()["current"]["collection"] == {
         "title": "YouTube Playlist", "index": 1, "count": 3}

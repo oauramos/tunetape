@@ -19,7 +19,7 @@ from tunetape.models import Track
 from tunetape.ui import (
     confirm, main_menu, play, prompt_discover, prompt_url, restore_terminal_state,
     run_session, save_terminal_state, show_ai_results, show_ai_settings,
-    show_ai_unavailable, show_debug, show_error, show_help, show_history,
+    show_ai_unavailable, show_debug, show_error, show_help, show_history, show_mcp,
     show_settings, show_theme_picker, verify_ai_connection, with_spinner,
 )
 
@@ -350,6 +350,7 @@ _MENU = {
     "3": _discover,
     "4": _settings_menu,
     "n": lambda: play(_link.get()),  # back to the player on what's playing
+    "m": show_mcp,
     "h": show_help,
     "d": lambda: show_debug(_daemon_log),
 }
