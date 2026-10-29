@@ -9,6 +9,8 @@ functions it replaced used to return.
 import time
 from typing import NamedTuple, Optional
 
+from rich.cells import cell_len, set_cell_size
+from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
@@ -88,26 +90,46 @@ MENU_CAPS = [
 MENU_NAV = [Cap("d", "debug", "pick('d')"), Cap("h", "help", "pick('h')"), QUIT]
 
 
+def clip(text: str, width: int) -> str:
+    """``text`` cut to ``width`` cells, with an ellipsis when it had to be cut."""
+    if cell_len(text) <= width:
+        return text
+    return set_cell_size(text, max(width - 1, 0)).rstrip() + "…"
+
+
 class MenuScreen(FlowScreen):
-    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'h', 'd' or 'q'.
+    """The tuna, a welcome, and the menu buttons. Answers '1'-'4', 'h', 'd', 'q' or 'n'.
 
     With room for it (the art, the top bar and two rows of boxed caps) the
     welcome is the original ASCII tuna with the title inside; smaller
     terminals get the pixel tuna and the title underneath.
+
+    While the daemon plays (from this window, or from the command line or an
+    agent) a row above the buttons names the track; it, or n, answers 'n' to
+    go back to the player. ``now_playing()`` is asked every NOW_EVERY seconds.
     """
 
     QUIT_RESULT = "q"
-    # ui.CSS shows the ASCII tuna only when both classes below say it fits.
+    NOW_EVERY = 1.0
+    # ui.CSS shows the ASCII tuna only when the classes below say it fits:
+    # -ascii-height with the menu alone, -ascii-tall with the now-playing row too.
     HORIZONTAL_BREAKPOINTS = [(0, "-pixel-width"), (ASCII_WIDTH + 4, "-ascii-width")]
-    VERTICAL_BREAKPOINTS = [(0, "-pixel-height"), (1 + ASCII_HEIGHT + 6, "-ascii-height")]
+    VERTICAL_BREAKPOINTS = [(0, "-pixel-height"), (1 + ASCII_HEIGHT + 6, "-ascii-height"),
+                            (1 + ASCII_HEIGHT + 8, "-ascii-tall")]
     BINDINGS = [
         Binding("1", "pick('1')", show=False),
         Binding("2", "pick('2')", show=False),
         Binding("3", "pick('3')", show=False),
         Binding("4", "pick('4')", show=False),
+        Binding("n", "pick('n')", show=False),
         Binding("h,question_mark", "pick('h')", show=False),
         Binding("d", "pick('d')", show=False),
     ]
+
+    def __init__(self, now_playing=None):
+        super().__init__()
+        self.now_playing = now_playing
+        self.now = None  # the daemon's status while something is playing, else None
 
     def compose(self):
         version = Content.from_markup("[$foreground 50%]v$v[/]", v=__version__)
@@ -118,12 +140,66 @@ class MenuScreen(FlowScreen):
             yield Static(Content.from_markup(
                 "[b $primary]Welcome to TuneTape[/]\n[$foreground 60%]Terminal Player by @oauramos[/]"
             ), id="welcome")
+            yield KeyCaps([], navigable=True, align="center", id="menu-now")
             yield KeyCaps(MENU_CAPS, navigable=True, boxed=True, flat_below=22, align="center",
                           id="menu-caps")
             yield KeyCaps(MENU_NAV, navigable=True, align="center", id="menu-nav")
 
     def on_mount(self) -> None:
+        self.query_one("#menu-now").display = False
         self.query_one("#menu-caps").focus()
+        if self.now_playing is not None:
+            self._check_now()
+            self.set_interval(self.NOW_EVERY, self._check_now)
+
+    @work(thread=True, exclusive=True, group="now-playing")
+    def _check_now(self) -> None:
+        # A socket round trip: off the app's thread, so a slow daemon never
+        # stalls the menu.
+        try:
+            status = self.now_playing()
+        except Exception:
+            status = None
+        try:
+            self.app.call_from_thread(self._show_now, status)
+        except RuntimeError:
+            pass  # the app is shutting down
+
+    def _show_now(self, status) -> None:
+        active = (isinstance(status, dict) and bool(status.get("current"))
+                  and status.get("state") in ("playing", "paused", "loading"))
+        self.now = status if active else None
+        self.set_class(active, "-now")
+        self._draw_now()
+
+    def _draw_now(self) -> None:
+        row = self.query_one("#menu-now", KeyCaps)
+        if self.now is None:
+            if row.has_focus:
+                self.query_one("#menu-caps").focus()
+            row.display = False
+            return
+        current = self.now["current"]
+        glyph = {"paused": "❚❚", "loading": "…"}.get(self.now["state"], "▶")
+        title = current.get("title") or current.get("input") or ""
+        # The pill is " n " + label + " ", inside #home's two-column padding.
+        room = self.size.width - 4 - 4 - cell_len(glyph) - 1
+        label = f"{glyph} {clip(title, max(room, 8))}"
+        if row.display and row.caps and row.caps[0].label == label:
+            return
+        row.caps = [Cap("n", label, "pick('n')")]
+        row.cursor = 0
+        row.display = True
+        row.refresh(layout=True)
+
+    def on_resize(self, event) -> None:
+        if self.now is not None:
+            self._draw_now()
+
+    def check_action(self, action: str, parameters: tuple):
+        if action == "pick" and parameters == ("n",) and self.now is None:
+            return False  # nothing playing: n does nothing
+        return True
 
     def action_pick(self, key: str) -> None:
         self.answer(key)
@@ -588,6 +664,7 @@ HELP_SECTIONS = {
         ("2", "Recently played"),
         ("3", "Discover: describe a vibe, an AI finds songs"),
         ("4", "Settings: normalization, theme, AI"),
+        ("n", "Back to the player, while music plays"),
         ("d", "Debug / logs"),
     ],
     "Player": [
@@ -598,11 +675,12 @@ HELP_SECTIONS = {
         ("m", "Mute"),
         ("n p", "Next / previous track"),
         ("tab", "Browse the queue, enter plays"),
+        ("b esc", "Menu; the music keeps playing"),
     ],
     "Everywhere": [
         ("h ?", "This help"),
         ("b esc", "Back (esc while typing)"),
-        ("q", "Quit tunetape"),
+        ("q", "Quit tunetape (stops the music)"),
         ("ctrl+c", "Quit, even while typing or loading"),
         ("ctrl+p", "Command palette: themes"),
     ],
