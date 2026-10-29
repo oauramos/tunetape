@@ -1041,6 +1041,16 @@ def test_an_unreachable_daemon_at_start_explains_and_exits(monkeypatch):
     assert client_mod.log_path().endswith("daemon.log")
 
 
+def test_a_late_now_playing_answer_after_leaving_the_menu_is_ignored():
+    # The status worker can answer after the menu was dismissed and its widgets
+    # removed (seen on Windows CI): that must not take the app down.
+    from tunetape.screens import MenuScreen
+
+    screen = MenuScreen(lambda: None)
+    screen._show_now({"state": "playing", "current": {"title": "Late"}})
+    screen._show_now(None)
+
+
 def test_the_daemon_going_away_mid_session_explains_and_reconnects(monkeypatch):
     clients = [album_client(frozen=True), FakeClient(frozen=True)]
     monkeypatch.setattr(main, "_link", main._DaemonLink(lambda spawn: clients.pop(0)))

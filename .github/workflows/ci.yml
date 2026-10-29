@@ -47,8 +47,10 @@ jobs:
       - name: Import smoke test (all platforms)
         run: python -c "import tunetape.__main__, tunetape.ui, tunetape.player, tunetape.demo; from tunetape import terminal, ipc, sources, engine, daemon, client, cli; print('imports OK on', __import__('sys').platform)"
 
+      # A test stuck for 2 minutes dumps every thread's stack into the log, so a
+      # hang shows where it is instead of the job sitting until it's cancelled.
       - name: Run tests
-        run: pytest -q
+        run: pytest -q -o faulthandler_timeout=120
 
   rust:
     name: rust (${{ matrix.os }})

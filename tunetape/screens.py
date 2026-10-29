@@ -14,6 +14,7 @@ from textual import work
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
+from textual.css.query import NoMatches
 from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, OptionList, ProgressBar, Static
 
@@ -175,10 +176,14 @@ class MenuScreen(FlowScreen):
         self._draw_now()
 
     def _draw_now(self) -> None:
-        row = self.query_one("#menu-now", KeyCaps)
+        try:
+            row = self.query_one("#menu-now", KeyCaps)
+            caps = self.query_one("#menu-caps")
+        except NoMatches:
+            return  # the menu was left while the daemon was asked: its widgets are gone
         if self.now is None:
             if row.has_focus:
-                self.query_one("#menu-caps").focus()
+                caps.focus()
             row.display = False
             return
         current = self.now["current"]
