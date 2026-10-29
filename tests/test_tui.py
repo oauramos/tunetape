@@ -1046,9 +1046,12 @@ def test_a_late_now_playing_answer_after_leaving_the_menu_is_ignored():
     # removed (seen on Windows CI): that must not take the app down.
     from tunetape.screens import MenuScreen
 
-    screen = MenuScreen(lambda: None)
-    screen._show_now({"state": "playing", "current": {"title": "Late"}})
-    screen._show_now(None)
+    async def late():  # Python 3.9 needs a running loop to build a screen
+        screen = MenuScreen(lambda: None)
+        screen._show_now({"state": "playing", "current": {"title": "Late"}})
+        screen._show_now(None)
+
+    asyncio.run(late())
 
 
 def test_the_daemon_going_away_mid_session_explains_and_reconnects(monkeypatch):
