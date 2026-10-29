@@ -26,7 +26,7 @@ from tunetape.art import DEFAULT_THEME, TUNETAPE_THEME
 from tunetape.player_screen import PlayerScreen, format_time
 from tunetape.screens import (
     BusyScreen, ConfirmModal, DebugScreen, Edit, ErrorModal, HelpModal, HistoryScreen,
-    MenuScreen, NO_QUIT, NoticeScreen, OptionsScreen, PromptScreen, Row, SuggestionsScreen,
+    McpScreen, MenuScreen, NO_QUIT, NoticeScreen, OptionsScreen, PromptScreen, Row, SuggestionsScreen,
     ThemeScreen,
 )
 # Re-exported for __main__'s signal and atexit handlers.
@@ -356,13 +356,13 @@ def _ask(build):
 
 def _notify(message: str, severity: str = "information") -> None:
     if _app is not None:
-        _app.call(_app.notify, message, severity=severity)
+        _app.call(lambda: _app.notify(message, severity=severity))
 
 
 # --- menu and prompts ------------------------------------------------------
 
 def main_menu(now_playing=None) -> str:
-    """The main menu. Returns '1'-'4', 'h', 'd', 'q', or 'n' (back to the player).
+    """The main menu. Returns '1'-'4', 'm', 'h', 'd', 'q', or 'n' (back to the player).
 
     ``now_playing()`` returns the daemon's status, or None when there is no
     daemon to ask; while it says something is playing the menu offers 'n'.
@@ -689,11 +689,28 @@ def show_ai_settings() -> str:
                 _notify(detail, "error")
 
 
-# --- help and debug --------------------------------------------------------
+# --- help, MCP and debug ---------------------------------------------------
 
 def show_help() -> Optional[str]:
     """The key reference. Returns 'quit' to quit, else None (back)."""
     return _ask(HelpModal)
+
+
+def show_mcp() -> Optional[str]:
+    """How to connect an AI agent over MCP, and adding tunetape to Claude Code
+    on request. Returns 'quit' to quit, else None (back)."""
+    from tunetape import mcp_setup
+
+    while True:
+        setup = mcp_setup.setup()
+        result = _ask(lambda: McpScreen(setup))
+        if result == "quit":
+            return "quit"
+        if result != "a":
+            return None
+        ok, detail = with_spinner("Adding tunetape to Claude Code…", mcp_setup.add_to_claude_code)
+        debug.log(detail, "INFO" if ok else "ERROR")
+        _notify(detail, "information" if ok else "error")
 
 
 def _log_line(ts: datetime, level: str, msg: str) -> Content:
@@ -816,6 +833,6 @@ __all__ = [
     "SessionClosed", "TunetapeApp", "run_session", "main_menu", "prompt_url",
     "prompt_discover", "show_ai_results", "show_ai_unavailable", "with_spinner",
     "show_error", "confirm", "verify_ai_connection", "show_history", "show_settings",
-    "show_theme_picker", "show_ai_settings", "show_help", "show_debug", "play",
+    "show_theme_picker", "show_ai_settings", "show_help", "show_mcp", "show_debug", "play",
     "format_time", "save_terminal_state", "restore_terminal_state",
 ]

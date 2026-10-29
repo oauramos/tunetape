@@ -14,7 +14,7 @@ from textual.widgets import Input
 
 import tunetape.__main__ as main
 from conftest import needs_fake_mpv, pid_alive
-from tunetape import client as client_mod, config, debug, ui
+from tunetape import client as client_mod, config, debug, mcp_setup, ui
 from tunetape.client import DaemonError, DaemonUnavailable
 from tunetape.demo import DEMO_ALBUM, DEMO_TRACKS, FakeClient, album_client
 from tunetape.models import Track
@@ -35,6 +35,11 @@ def isolated(tmp_path, monkeypatch):
     dir, start every test with fresh remembered highlights, and make sure no
     test but the end-to-end one can reach (or start) a real daemon."""
     monkeypatch.setenv("TUNETAPE_DATA_DIR", str(tmp_path))
+    # The MCP screen reads Claude Code's config, may run claude and copies to
+    # the clipboard: none of it real here.
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    monkeypatch.setattr(mcp_setup, "claude_cli", lambda: None)
+    monkeypatch.setattr(mcp_setup, "copy", lambda text: True)
     monkeypatch.setattr(ui, "_settings_at", {})
     monkeypatch.setattr(ui, "_history_at", 0)
     monkeypatch.setattr(main, "_link", main._DaemonLink(_no_daemon))
@@ -594,10 +599,12 @@ def test_error_and_confirm():
 @pytest.mark.parametrize("names, result", [
     (["2"], "2"),
     (["d"], "d"),
+    (["m"], "m"),
     (["q"], "q"),
     (["right", "right", "enter"], "3"),
-    (["down", "enter"], "d"),            # down from the buttons into the nav row
-    (["down", "right", "enter"], "h"),
+    (["down", "enter"], "m"),            # down from the buttons into the nav row
+    (["down", "right", "enter"], "d"),
+    (["down", "right", "right", "enter"], "h"),
 ])
 def test_menu(names, result):
     assert drive(ui.main_menu, keys(*names, wait_for="MenuScreen"))[0] == result
@@ -627,6 +634,7 @@ def test_menu_shows_the_ascii_tuna_when_it_fits(size, ascii):
      ("back", None), ("quit", None)),
     (lambda: ui.show_ai_unavailable("nope"), "NoticeScreen", "back", "quit"),
     (ui.show_debug, "DebugScreen", None, "quit"),
+    (ui.show_mcp, "McpScreen", None, "quit"),
     (ui.show_theme_picker, "ThemeScreen", None, "quit"),
 ])
 def test_navigation_keys_are_the_same_everywhere(flow, wait_for, back, quit_):
@@ -748,6 +756,91 @@ def test_theme_picker_saves_or_reverts():
     config.set_setting("theme", "tunetape")
     _, app = drive(ui.show_theme_picker, keys("down", "down", "escape", wait_for="ThemeScreen"))
     assert app.theme == "tunetape" and config.get_setting("theme") == "tunetape"
+
+
+def mcp_screen(script, size=(108, 30)):
+    seen = {}
+
+    async def run(pilot, app):
+        await until(pilot, on(app, "McpScreen"))
+        await pilot.pause(0.1)
+        seen["text"] = str(app.screen.query_one("#mcp Static").render())
+        seen["caps"] = text(app, "KeyCaps")
+        await script(pilot, app, seen)
+
+    result, app = drive(ui.show_mcp, run, size)
+    return result, seen
+
+
+async def _nothing(pilot, app, seen):
+    pass
+
+
+def test_mcp_screen_shows_both_setups():
+    _, seen = mcp_screen(_nothing)
+    assert mcp_setup.claude_command() in seen["text"]
+    assert '"mcpServers"' in seen["text"] and "claude not found" in seen["text"]
+    assert "add to Claude Code" not in seen["caps"]  # no claude to run
+    assert "copy command" in seen["caps"]
+
+
+def test_mcp_screen_fits_a_small_terminal():
+    _, seen = mcp_screen(_nothing, size=(60, 24))
+    assert "Claude Code" in seen["text"] and " q " in seen["caps"]
+
+
+def test_mcp_screen_copies(monkeypatch):
+    copied = []
+    monkeypatch.setattr(mcp_setup, "copy", copied.append)
+
+    async def script(pilot, app, seen):
+        await pilot.press("c", "j")
+        await pilot.pause(0.1)
+
+    assert mcp_screen(script)[0] is NOTHING
+    assert copied == [mcp_setup.claude_command(), mcp_setup.config_json()]
+
+
+def test_mcp_screen_adds_tunetape_to_claude_code(monkeypatch):
+    added = []
+
+    def add():
+        added.append(True)
+        return True, "Added tunetape to Claude Code."
+
+    monkeypatch.setattr(mcp_setup, "claude_cli", lambda: ["claude"])
+    monkeypatch.setattr(mcp_setup, "add_to_claude_code", add)
+
+    async def script(pilot, app, seen):
+        assert "add to Claude Code" in seen["caps"]
+        monkeypatch.setattr(mcp_setup, "registered", lambda: "user")
+        await pilot.press("a")
+        for _ in range(100):  # the screen comes back, now with tunetape added
+            await pilot.pause(0.05)
+            if on(app, "McpScreen")() and "added" in str(
+                    app.screen.query_one("#mcp Static").render()):
+                break
+        seen["after"] = str(app.screen.query_one("#mcp Static").render())
+        seen["after_caps"] = text(app, "KeyCaps")
+        await pilot.press("b")
+
+    result, seen = mcp_screen(script)
+    assert result is None and added == [True]
+    assert "✓ added" in seen["after"] and "user scope" in seen["after"]
+    assert "add to Claude Code" not in seen["after_caps"]
+
+
+def test_a_notice_from_the_flow_shows_up():
+    async def script(pilot, app):
+        await until(pilot, lambda: bool(app._notifications))
+
+    def flow():
+        ui._notify("Connected · claude responded.", "error")
+        return "shown"
+
+    result, app = drive(flow, script)
+    assert result == "shown"
+    assert [n.severity for n in app._notifications] == ["error"]
 
 
 def test_debug_clears_the_log():

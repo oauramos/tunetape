@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Stream music from YouTube, Spotify and KHInsider, right inside your terminal.</b><br>
-  <sub>Paste a link. Press Enter. Listen. No browser, no tabs, no ads.</sub>
+  <sub>Paste a link. Press Enter. Listen. Or let your AI agent pick the music. No browser, no tabs, no ads.</sub>
 </p>
 
 <p align="center">
@@ -20,6 +20,7 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#how-it-works">How it works</a> ·
+  <a href="#command-line-and-ai-agents">CLI &amp; agents</a> ·
   <a href="#screens">Screens</a> ·
   <a href="#keys">Keys</a> ·
   <a href="https://github.com/oauramos/tunetape/wiki">Wiki</a>
@@ -37,7 +38,9 @@
 
 tunetape is a small audio player that lives in your terminal. It hands the stream to [mpv](https://mpv.io/) (audio only) and wraps it in a btop-style interface you can drive with the keyboard or the mouse. Nothing is downloaded or stored; it just plays.
 
-- **Three sources.** YouTube videos and playlists, Spotify tracks and playlists, and [KHInsider](https://downloads.khinsider.com) video game soundtracks. Paste any link and the source is detected as you type.
+- **Lots of sources.** YouTube videos and playlists, Spotify tracks and playlists, [KHInsider](https://downloads.khinsider.com) video game soundtracks, direct audio links (MP3, FLAC, …), local files, any site yt-dlp supports, or just a few words to search YouTube. The source is detected as you type.
+- **Drive it from anywhere.** The music plays in a small background daemon, so the player, the `tunetape play <link>` command line and AI agents all share one queue. Close the window and the music keeps going.
+- **Made for AI agents.** A built-in [MCP](https://modelcontextprotocol.io) server lets Claude Code, Claude Desktop, Cursor or any MCP client play, queue and skip for you. Press **m** on the menu to set it up.
 - **A player full of live data.** Live L/R levels with a loudness graph, plus the stream's codec, bitrate, sample rate, cache and download speed, all next to the track and its controls.
 - **Playlists and albums.** Next and previous, auto-advance, and a queue you can jump around in.
 - **Recently played.** Everything you play is remembered, and playlists resume at the track you left off.
@@ -123,6 +126,25 @@ Spotify playlists, YouTube playlists and KHInsider albums show the track positio
   <img src="assets/playlist.png" alt="The player in playlist mode showing Track 12/24, next and prev controls, and the album's queue" width="860">
 </p>
 
+## Command line and AI agents
+
+Everything the player does is also a command. The first one starts the background daemon, and an open tunetape window follows along:
+
+```bash
+tunetape play https://www.youtube.com/watch?v=jfKfPfyJRdk   # replace the queue and play
+tunetape add lofi hip hop --next                             # words search YouTube
+tunetape status                                              # what is playing, where, and the volume
+tunetape next | pause | resume | volume +10 | seek 1:30 | queue | history
+```
+
+To hand the controls to an AI agent, add tunetape as an MCP server. For Claude Code:
+
+```bash
+claude mcp add --scope user tunetape -- tunetape mcp
+```
+
+Then ask it to *"play something calm for focus"*, *"queue this album after it"* or *"what's playing?"*. Press **m** on tunetape's menu for the config other clients need (and a one-key setup for Claude Code). The full list of tools is in [docs/mcp.md](docs/mcp.md), and the protocol any other client can speak is in [docs/protocol.md](docs/protocol.md). [`tunetape-cli`](rust/tunetape-cli) is one such client: the same commands in a 500 KB Rust binary that starts in about 2 ms.
+
 ## Screens
 
 ### Recently played
@@ -174,6 +196,7 @@ The same keys work on every screen, and each screen's row of buttons ends with t
 | `b` `esc` | Back |
 | `q` | Quit (the music stops too) |
 | `h` `?` | Help: every key, on any screen |
+| `m` | On the menu: connect an AI agent (MCP) |
 | `ctrl+c` | Quit, even while typing or loading |
 | `ctrl+p` | Command palette (themes) |
 
