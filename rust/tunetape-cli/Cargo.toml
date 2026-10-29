@@ -1,6 +1,6 @@
 [package]
 name = "tunetape-cli"
-version = "0.10.0"
+version = "1.0.0"
 edition = "2021"
 rust-version = "1.79"
 description = "Command-line client for the tunetape daemon (docs/protocol.md)"
